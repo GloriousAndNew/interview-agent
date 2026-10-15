@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview-agent"
+version = "0.1.0"
+description = "Local interview recording knowledge base with cloud ASR and DeepSeek"
+requires-python = ">=3.11"
+dependencies = ["streamlit>=1.66,<2", "pydantic>=2.10,<3", "httpx>=0.28,<1", "imageio-ffmpeg>=0.6,<1", "oss2>=2.19,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["interview_agent*"]
+
+[tool.setuptools.package-data]
+interview_agent = ["ui.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
