@@ -2,7 +2,13 @@
 
 Windows 本地应用，使用阿里云 ASR 转写录音、DeepSeek Flash 整理问答，SQLite 和 Markdown 保存到本机。
 
-## 启动
+## Windows 程序包下载
+
+[下载最新 Windows x64 程序包](https://github.com/GloriousAndNew/interview-agent/releases/latest)。解压完整目录后双击 `interview-agent.exe`，无需安装 Python。请保留 `_internal` 文件夹，并配置云端模型环境变量。
+
+升级时先退出旧程序、备份数据目录，再解压新版到新文件夹，沿用原数据目录。当前通过发布页手动下载更新，尚未包含自动检查更新功能。详见 [EXE 使用与升级说明](docs/windows-exe.md)。
+
+## 源码启动
 
 双击 `start.cmd`，或在本目录运行：
 
