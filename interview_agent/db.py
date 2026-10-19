@@ -28,7 +28,7 @@ class Store:
         self.path = self.root / "app.db"
         with closing(self.connect()) as con:
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise RuntimeError("数据库版本高于本程序，请升级程序。")
             con.executescript("""
                 PRAGMA journal_mode=WAL;
@@ -72,6 +72,13 @@ class Store:
                     chunk_no INTEGER, attempt INTEGER, code TEXT NOT NULL,
                     severity TEXT NOT NULL, message TEXT NOT NULL, details TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS events_job ON job_events(job_id,created);
+                CREATE TABLE IF NOT EXISTS reference_answers (
+                    id TEXT PRIMARY KEY, revision_id TEXT NOT NULL, qa_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('RUNNING','SUCCEEDED','FAILED')),
+                    content TEXT NOT NULL DEFAULT '{}', model TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
+                    created REAL NOT NULL, updated REAL NOT NULL, lease_until REAL NOT NULL,
+                    FOREIGN KEY(qa_id,revision_id) REFERENCES qa(id,revision_id) ON DELETE CASCADE);
+                CREATE INDEX IF NOT EXISTS reference_question ON reference_answers(revision_id,qa_id,created);
             """)
             con.execute("BEGIN IMMEDIATE")
             columns = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}
@@ -85,7 +92,7 @@ class Store:
                     (SELECT MIN(created) FROM calls WHERE job_id=jobs.id)),
                     timing_estimated=1 WHERE status<>'QUEUED'""")
                 con.execute("UPDATE jobs SET finished_at=updated WHERE status IN ('COMPLETED','FAILED','CANCELLED')")
-            con.execute("PRAGMA user_version=3")
+            con.execute("PRAGMA user_version=4")
             con.commit()
 
     def connect(self) -> sqlite3.Connection:
@@ -247,6 +254,8 @@ class Store:
             con.execute("INSERT INTO revisions(id,interview_id,origin,transcript_path,content,created) VALUES (?,?,?,?,?,?)", (new_id, interview_id, "human", old["transcript_path"], json.dumps(content, ensure_ascii=False), time.time()))
             for i, q in enumerate(content["items"]):
                 con.execute("INSERT INTO qa VALUES (?,?,?,?,?,?)", (q["id"], new_id, i, q["question"], q.get("answer_summary"), "、".join(q["tags"])))
+            from .reference_answers import carry_forward
+            carry_forward(con, expected, new_id, json.loads(old["content"]), content)
             con.execute("UPDATE interviews SET active_revision=? WHERE id=?", (new_id, interview_id))
         return new_id
 

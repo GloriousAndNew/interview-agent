@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from interview_agent.config import Settings
-from interview_agent.db import Store
+from interview_agent.db import BudgetExceeded, Store
 from interview_agent.document_import import DocumentImportError
 from interview_agent.diagnostics import report as diagnostic_report
 from interview_agent.files import inside, read_json
@@ -19,6 +19,7 @@ from interview_agent.providers import ProviderError, validate_key
 from interview_agent.progress import duration, local_time, task_progress
 from interview_agent.services import export_revision, request_delete, submit, timestamp
 from interview_agent.ui import apply_style, navigate, page_heading, tags, task_heading
+from interview_agent.reference_answers import answer_state, generate as generate_reference, markdown as reference_markdown
 
 
 st.set_page_config(page_title="面试录音整理助手", page_icon="🎙️", layout="wide")
@@ -169,7 +170,48 @@ def tasks(store):
     st.caption("流程进度按阶段和已保存片段计算，不代表耗时比例；云端暂不提供准确剩余时间。")
 
 
-def library(store):
+def high_score_panel(settings, store, revision_id, qa_id, question, original, location):
+    key = f"{location}-{revision_id}-{qa_id}"
+    with st.expander("面试高分答案", expanded=False):
+        st.caption("AI 生成的练习参考，与面试原答独立保存，不保证获得高分。涉及个人经历、项目与指标时请按真实情况补充。")
+        saved, latest = answer_state(store, revision_id, qa_id)
+        busy = bool(latest and latest["status"] == "RUNNING" and latest["lease_until"] > time.time())
+        if saved:
+            content = saved["content"]
+            st.markdown(content["answer"])
+            for name, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充")):
+                if content.get(name):
+                    st.markdown("**" + label + "**")
+                    for value in content[name]:
+                        st.markdown("- " + value)
+            st.caption(f"生成于 {local_time(saved['created'])} · {saved['model']}")
+            st.download_button("下载高分答案 Markdown", reference_markdown(question, original, content), file_name=f"high-score-{qa_id[:12]}.md", mime="text/markdown", key="reference-download-" + key)
+        else:
+            st.info("结合当前问题、岗位、原始回答和相关原文生成参考答案。")
+        if latest and latest["status"] == "FAILED":
+            st.warning(latest["error"])
+        elif latest and latest["status"] == "RUNNING" and not busy:
+            st.warning("上次生成中断或超时，可重新生成；已有答案保留。")
+        if busy:
+            st.info("正在生成，请稍候。完成后刷新页面查看；重复点击不会再次调用模型。")
+            if st.button("刷新答案状态", key="reference-refresh-" + key):
+                st.rerun()
+        st.caption(f"每次生成会调用一次 DeepSeek，按设置预留 ¥{settings.llm_reserve_per_chunk:.2f}，计入月预算；这不是实际账单。")
+        if st.button("重新生成高分答案" if saved else "生成高分答案", key="reference-generate-" + key, disabled=busy, type="secondary"):
+            try:
+                with st.spinner("正在生成面试高分答案，请稍候…"):
+                    generate_reference(settings, store, revision_id, qa_id)
+            except (ProviderError, BudgetExceeded) as exc:
+                st.error(str(exc))
+            except ValueError:
+                st.error("问答版本已变化、结果校验失败或请求已失效，请刷新后重试；已有答案保留。")
+            except Exception:
+                st.error("生成或保存失败，请稍后重试；已有答案保留。")
+            else:
+                st.rerun()
+
+
+def library(settings, store):
     page_heading("问答知识库", "把经历变成积累，从真实回答中找到下一次面试的准备方向。", "知识沉淀")
     a, b = st.columns([3, 1])
     keyword = a.text_input("搜索问题、回答、主题或面试标题", placeholder="例如：Redis、项目难点")
@@ -179,9 +221,11 @@ def library(store):
     for row in rows:
         with st.container(border=True):
             st.subheader(row["question"])
+            st.caption("面试原答")
             st.write(row["answer"] or "未作答或无法辨认。")
             tags([t for t in row["tags"].split("、") if t])
             st.caption(" · ".join(filter(None, [row["title"], row["company"], row["position"], row["date"]])))
+            high_score_panel(settings, store, row["revision_id"], row["id"], row["question"], row["answer"], "library")
             def open_interview(selected_id):
                 st.session_state["selected_interview"] = selected_id
                 st.session_state["navigation"] = "面试详情"
@@ -235,7 +279,9 @@ def details(settings, store):
             st.info("本场未提取到面试问题；原文仍已保存。")
         for n, qa in enumerate(content["items"], 1):
             with st.expander(f"{n}. {qa['question']}", expanded=n == 1):
+                st.caption("面试原答")
                 st.write(qa.get("answer_summary") or "未作答或无法辨认。")
+                high_score_panel(settings, store, revision["id"], qa["id"], qa["question"], qa.get("answer_summary"), "detail")
                 st.caption("标签：" + "、".join(qa["tags"]))
                 if qa.get("parent_id"):
                     st.caption("追问关联：" + next((q["question"] for q in content["items"] if q["id"] == qa["parent_id"]), "待核对"))
@@ -406,7 +452,7 @@ def main():
         st.markdown(f'<div class="worker-status"><span class="status-dot {"online" if alive else ""}"></span>{"后台已连接" if alive else "后台未连接"}</div>', unsafe_allow_html=True)
         if not alive:
             st.caption("请使用 start.ps1 启动后台")
-    {"导入面试": lambda: home(settings, store), "处理任务": lambda: tasks(store), "问答知识库": lambda: library(store), "面试详情": lambda: details(settings, store), "设置与数据": lambda: settings_page(settings, store)}[navigation]()
+    {"导入面试": lambda: home(settings, store), "处理任务": lambda: tasks(store), "问答知识库": lambda: library(settings, store), "面试详情": lambda: details(settings, store), "设置与数据": lambda: settings_page(settings, store)}[navigation]()
 
 
 if __name__ == "__main__":

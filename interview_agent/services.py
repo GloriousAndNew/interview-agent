@@ -117,6 +117,7 @@ def timestamp(ms: int) -> str:
 
 
 def markdown_text(store: Store, interview_id: str, revision: dict) -> str:
+    from .reference_answers import answer_state, content_markdown
     interview = store.one("SELECT * FROM interviews WHERE id=?", (interview_id,))
     content = json.loads(revision["content"])
     transcript = Transcript.model_validate(read_json(inside(store.root, revision["transcript_path"])))
@@ -134,6 +135,7 @@ def markdown_text(store: Store, interview_id: str, revision: dict) -> str:
         rel = os.path.relpath(inside(store.root, media["path"]), store.root / "notes" / interview_id).replace("\\", "/")
         lines += ["", f"[原始录音]({rel})"]
     lines += ["", "## 问答", ""]
+    has_reference = False
     for i, qa in enumerate(content["items"], 1):
         lines += [f"### {i}. {qa['question']}", "", f"标签：{'、'.join(qa['tags'])}", "", "**回答摘要**", "", qa.get("answer_summary") or "未作答或无法辨认。", "", "**原文依据**", ""]
         for sid in dict.fromkeys(qa["question_segment_ids"] + qa["answer_segment_ids"]):
@@ -148,8 +150,12 @@ def markdown_text(store: Store, interview_id: str, revision: dict) -> str:
             lines += [f"关联主问题：`{qa['parent_id']}`", ""]
         if qa.get("review_reasons"):
             lines += ["待核对：" + "；".join(qa["review_reasons"]), ""]
+        reference, _ = answer_state(store, revision["id"], qa["id"])
+        if reference:
+            has_reference = True
+            lines += ["#### 面试高分答案", "", content_markdown(reference["content"]), ""]
     lines += ["## AI 补充建议", ""]
-    lines += content.get("ai_advice") or ["未生成补充答案；以上回答仅根据录音整理。"]
+    lines += content.get("ai_advice") or (["高分参考答案已在对应问题下单独标注，面试原答保持不变。"] if has_reference else ["未生成补充答案；以上回答仅根据录音整理。"])
     return "\n".join(lines) + "\n"
 
 

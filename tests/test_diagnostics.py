@@ -152,5 +152,5 @@ def test_diagnostics_schema_migration_is_repeatable(store):
         con.execute("PRAGMA user_version=1")
     Store(store.root)
     with store.connect() as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
     Store(store.root)

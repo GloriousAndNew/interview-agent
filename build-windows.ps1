@@ -1,0 +1,15 @@
+param([switch]$SkipTests)
+$ErrorActionPreference = 'Stop'
+$taskRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$taskPython = Join-Path $taskRoot '.venv/Scripts/python.exe'
+if (-not (Test-Path -LiteralPath $taskPython)) { throw 'Create .venv and install project dependencies first.' }
+if (-not $SkipTests) {
+    & $taskPython -m pytest -q $taskRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Tests failed; build stopped.' }
+}
+& $taskPython -m PyInstaller --noconfirm --distpath (Join-Path $taskRoot 'dist') --workpath (Join-Path $taskRoot 'build') (Join-Path $taskRoot 'interview-agent.spec')
+if ($LASTEXITCODE -ne 0) { throw 'Executable build failed.' }
+Copy-Item -LiteralPath (Join-Path $taskRoot 'docs/windows-exe.md') -Destination (Join-Path $taskRoot 'dist/interview-agent/使用说明.md')
+& $taskPython (Join-Path $taskRoot 'tools/package_windows.py')
+if ($LASTEXITCODE -ne 0) { throw 'Archive packaging failed.' }
+Write-Output 'Build ready: dist/interview-agent/interview-agent.exe. Keep the complete folder together.'

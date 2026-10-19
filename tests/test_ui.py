@@ -69,3 +69,22 @@ def test_task_filters_search_and_result_navigation(settings, store, submitted, m
     assert not app.exception
     assert app.sidebar.radio[0].value == "面试详情"
     assert app.session_state["selected_interview"] == submitted[0]
+
+
+def test_generate_high_score_in_library_and_read_in_detail(settings, store, submitted, monkeypatch):
+    from interview_agent.providers import DeepSeek
+    from interview_agent.reference_answers import HighScoreAnswer, answer_state
+    Pipeline(settings, store, llm_factory=FakeLLM).run_once()
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    monkeypatch.setenv("deepseek", "fake-deepseek")
+    monkeypatch.setattr(DeepSeek, "high_score", lambda self, context: (HighScoreAnswer(answer="这是一份独立保存的参考答案", key_points=["解释边界条件"]), {}, "ui-mock"))
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    app.sidebar.radio[0].set_value("问答知识库").run()
+    next(b for b in app.button if b.label == "生成高分答案").click().run()
+    assert not app.exception
+    assert any(b.label == "重新生成高分答案" for b in app.button)
+    question = store.search()[0]
+    assert answer_state(store, question["revision_id"], question["id"])[0]["content"]["answer"] == "这是一份独立保存的参考答案"
+    next(b for b in app.button if b.label == "查看面试与原文").click().run()
+    assert not app.exception
+    assert any(m.value == "这是一份独立保存的参考答案" for m in app.markdown)
