@@ -17,6 +17,7 @@ from contextlib import closing
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from desktop import healthy
 from interview_agent.db import Store, uid
+from interview_agent import __version__
 from interview_agent.files import atomic_json, read_json
 from interview_agent.update_bundle import MANIFEST, extract_bundle, safe_name, sha256
 
@@ -33,8 +34,8 @@ def wait_until(predicate, seconds=90):
 def main():
     repo = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser()
-    parser.add_argument("--old", type=Path, default=repo / "dist/interview-agent-v0.1.2-windows-x64.zip")
-    parser.add_argument("--new", type=Path, default=repo / "dist/interview-agent-v0.1.3-windows-x64.zip")
+    parser.add_argument("--old", type=Path, default=repo / "dist/interview-agent-v0.1.3-windows-x64.zip")
+    parser.add_argument("--new", type=Path, default=repo / f"dist/interview-agent-v{__version__}-windows-x64.zip")
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
     root = Path(tempfile.mkdtemp(prefix="interview-update-check-")).resolve()
@@ -42,13 +43,14 @@ def main():
     data.mkdir()
     (data / "logs").mkdir()
     with ZipFile(args.old) as archive:
+        old_version = json.loads(archive.read("interview-agent/update-manifest.json"))["version"]
         for info in archive.infolist():
             name = safe_name(info.filename)
             if not name.startswith("interview-agent/"):
                 raise RuntimeError("Invalid old bundle")
         archive.extractall(root)
     app = root / "interview-agent"
-    staged = extract_bundle(args.new, data / "updates/v0.1.3/staged", "0.1.3")
+    staged = extract_bundle(args.new, data / f"updates/v{__version__}/staged", __version__)
     store = Store(data)
     interview, job = store.create("更新保留样本", {}, {}, {})
     with store.transaction() as con:
@@ -61,24 +63,24 @@ def main():
     report = {"cloud_calls": 0, "root": str(root)}
     try:
         wait_until(lambda: (data / "desktop-instance.json").exists() and healthy(port))
-        (data / "desktop-stop").touch()
-        launcher.wait(timeout=30)
-        token = uid()
-        helper_dir = data / "updates" / ("helper-" + token)
-        helper_dir.mkdir()
-        helper = helper_dir / "interview-agent-updater.exe"
-        shutil.copy2(staged / helper.name, helper)
-        plan = {"token": token, "version": "0.1.3", "old_version": "0.1.2", "data_dir": str(data), "install_dir": str(app),
-                "staged_dir": str(staged), "manifest_hash": sha256(staged / MANIFEST), "parent_pid": 0, "port": port, "headless": True, "no_browser": True}
-        atomic_json(data / "updates/install-plan.json", plan)
-        atomic_json(data / "updates/installing.json", {"token": token})
-        atomic_json(data / "updates/install-journal.json", {"token": token, "phase": "pending"})
-        updater = subprocess.Popen([str(helper), "--plan", str(data / "updates/install-plan.json")], cwd=data, env=env)
-        updater.wait(timeout=150)
-        state = read_json(data / "updates/status.json")
-        assert updater.returncode == 0 and state["phase"] == "completed", state
         instance = read_json(data / "desktop-instance.json")
-        assert instance["version"] == "0.1.3" and instance["update_token"] == token
+        # Exercise the real old launcher's install request and graceful shutdown.
+        atomic_json(data / "updates/status.json", {"phase":"waiting", "version":__version__, "manifest_hash":sha256(staged / MANIFEST), "updated_at":time.time()})
+        atomic_json(data / "updates/install-request.json", {"version":__version__, "instance_token":instance["instance_token"]})
+        launcher.wait(timeout=90)
+        def finished():
+            state_path = data / "updates/status.json"
+            if not state_path.exists():
+                return False
+            current = read_json(state_path)
+            if current.get("phase") in ("failed", "rolled_back", "repair_required"):
+                raise RuntimeError(current.get("message", "Update failed"))
+            return current.get("phase") == "completed"
+        wait_until(finished, 150)
+        state = read_json(data / "updates/status.json")
+        assert state["phase"] == "completed", state
+        instance = read_json(data / "desktop-instance.json")
+        assert instance["version"] == __version__ and instance["update_token"]
         assert healthy(instance["port"])
         assert not (data / "updates/installing.json").exists()
         with closing(sqlite3.connect(data / "app.db")) as con:
@@ -86,8 +88,8 @@ def main():
             assert con.execute("SELECT status FROM jobs WHERE id=?", (job,)).fetchone()[0] == "FAILED"
         assert (data / "updates/database-before-update.db").exists()
         assert (Path(state["backup_dir"]) / "interview-agent.exe").exists()
-        report.update(status="ok", old_version="0.1.2", new_version="0.1.3", database_preserved=True, backup=True,
-                      independent_updater=True, health="ok", no_python_on_path=True)
+        report.update(status="ok", old_version=old_version, new_version=__version__, database_preserved=True, backup=True,
+                      independent_updater=True, launcher_install_request=True, health="ok", no_python_on_path=True)
     finally:
         (data / "desktop-stop").touch()
         if launcher.poll() is None:
@@ -97,7 +99,14 @@ def main():
         if not args.keep:
             if root.parent != Path(tempfile.gettempdir()).resolve() or not root.name.startswith("interview-update-check-"):
                 raise RuntimeError("Cleanup boundary mismatch")
-            shutil.rmtree(root)
+            for attempt in range(10):
+                try:
+                    shutil.rmtree(root)
+                    break
+                except PermissionError:
+                    if attempt == 9:
+                        raise
+                    time.sleep(0.5)
     print(json.dumps(report))
 
 

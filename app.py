@@ -19,7 +19,7 @@ from interview_agent.schemas import Transcript
 from interview_agent.providers import ProviderError, validate_key
 from interview_agent.progress import duration, local_time, task_progress
 from interview_agent.services import export_revision, request_delete, submit, timestamp
-from interview_agent.ui import apply_style, navigate, page_heading, tags, task_heading
+from interview_agent.ui import apply_style, navigate, page_heading, tags, task_heading, section_label, connection_cards, empty_state, recent_heading
 from interview_agent.reference_answers import answer_state, generate as generate_reference, markdown as reference_markdown
 from interview_agent.uploads import upload_summary
 from interview_agent.upload_test import test_upload
@@ -39,22 +39,33 @@ def home(settings, store):
     columns[0].metric("已导入面试", store.one("SELECT COUNT(*) n FROM interviews WHERE deleted=0")["n"])
     columns[1].metric("已整理问答", store.one("SELECT COUNT(*) n FROM qa q JOIN interviews i ON i.active_revision=q.revision_id WHERE i.deleted=0")["n"])
     columns[2].metric("待处理任务", store.one("SELECT COUNT(*) n FROM jobs j JOIN interviews i ON i.id=j.interview_id WHERE i.deleted=0 AND j.status IN ('QUEUED','RUNNING','RETRY_WAIT')")["n"])
-    st.markdown('<div class="workflow"><div class="workflow-step"><b>01 · 导入录音</b><small>音频 / 转写文本</small></div><div class="workflow-step"><b>02 · 自动整理</b><small>转写与来源校验</small></div><div class="workflow-step"><b>03 · 沉淀知识</b><small>搜索、回听、复盘</small></div></div>', unsafe_allow_html=True)
-    with st.form("upload", clear_on_submit=False):
-        st.subheader("导入新面试")
+    st.markdown('<div class="workflow"><div class="workflow-step"><b>01 · 导入面试</b><small>录音与问答文档</small></div><div class="workflow-step"><b>02 · 自动整理</b><small>转写与来源校验</small></div><div class="workflow-step"><b>03 · 沉淀知识</b><small>搜索、回听、复盘</small></div></div>', unsafe_allow_html=True)
+    import_column, guide_column = st.columns([2.15, 1], gap="large")
+    with import_column, st.form("upload", clear_on_submit=False):
+        section_label("01", "导入新面试", "上传录音或问答文档，开始一次新的复盘。")
         upload = st.file_uploader("录音或面试问答文档", type=["mp3", "m4a", "wav", "docx", "md", "txt", "json"], max_upload_size=settings.max_upload_mb, help="文档最多 10 MB。Word 读取正文和表格；Markdown/TXT 使用 UTF-8。旧版 DOC 请先另存为 DOCX。")
         title = st.text_input("面试标题", max_chars=200, placeholder="例如：后端开发 · 第一轮")
         a, b, c = st.columns(3)
         company = a.text_input("公司（可选）", max_chars=100)
         position = b.text_input("岗位（可选）", max_chars=100)
         date = c.date_input("面试日期（可选）", value=None)
-        mode = st.radio("双声道录音的处理方式", ["普通立体声：合并识别并区分说话人", "双方分别占一个声道：拆开识别"], help="拆开识别会分别计费。单声道录音不受此选项影响。")
-        duplicate = st.checkbox("允许同一录音创建另一场面试")
+        with st.expander("录音高级选项"):
+            mode = st.radio("双声道录音的处理方式", ["普通立体声：合并识别并区分说话人", "双方分别占一个声道：拆开识别"], help="拆开识别会分别计费。单声道录音不受此选项影响。")
+            duplicate = st.checkbox("允许同一录音创建另一场面试")
         st.caption("录音发送至阿里云转写；DOCX、Markdown、TXT、JSON 直接整理文字，不上传 OSS、不调用语音识别。文字发送至 DeepSeek，结果保存在本机。")
         with st.expander("如何准备问答文档"):
             st.write("可按「问题：…… / 回答：……」逐条编写，也可在 Word 中使用问题、回答两列表格。无需固定模板。")
             st.caption("Word 读取正文段落与表格，保留原文件；图片文字、批注、页眉页脚不参与整理。文档不生成录音时间戳或回听入口。")
         clicked = st.form_submit_button("开始整理", type="primary")
+    with guide_column:
+        with st.container(border=True, key="import-guide"):
+            section_label("指南", "选择适合的导入方式")
+            st.markdown('<div class="guide-item"><span>音频录音</span><b>让对话自动变成问答</b><p>支持 MP3、M4A、WAV。压缩上传副本，原始录音保留，支持回听。</p></div><div class="guide-item"><span>问答文档</span><b>已有文字，也能直接整理</b><p>支持 DOCX、Markdown、TXT、JSON。跳过语音转写，直接整理入库。</p></div>', unsafe_allow_html=True)
+            st.caption("文件大小、录音时长和预算可在设置页调整。")
+        with st.container(border=True, key="privacy-note"):
+            st.markdown("**你的面试资料，保存在本机**")
+            st.caption("录音由阿里云转写，文字由云端模型整理。原文件、问答和修改记录保存在本地知识库。")
+            st.button("查看处理任务", on_click=navigate, args=("处理任务",), width="stretch")
     if clicked:
         if not upload:
             st.warning("请先选择一个文件。")
@@ -73,6 +84,21 @@ def home(settings, store):
     if settings.missing_asr():
         st.info("录音自动转写还需补齐阿里云/OSS 配置；现在可以直接导入 DOCX、Markdown、TXT 或 JSON 整理问答。")
 
+    st.divider()
+    section_label("最近", "最近导入的面试", "继续查看问答、核对原文，或跟踪处理进度。")
+    recent = store.rows("SELECT i.*, (SELECT j.status FROM jobs j WHERE j.interview_id=i.id ORDER BY j.created DESC LIMIT 1) task_status FROM interviews i WHERE i.deleted=0 ORDER BY i.created DESC LIMIT 4")
+    if not recent:
+        empty_state("从第一场面试开始", "导入后，最近的面试会显示在这里。")
+    for item in recent:
+        with st.container(border=True, key="recent-" + item["id"]):
+            title_column, state_column, action_column = st.columns([4, 1.2, 1.3], vertical_alignment="center")
+            with title_column:
+                recent_heading(item["title"], " · ".join(filter(None, [item["position"], item["company"], item["date"]])) or "未填写岗位与日期")
+            with state_column:
+                task_heading("", item["task_status"] or "QUEUED", STATUS.get(item["task_status"], "待处理"))
+            with action_column:
+                st.button("查看面试" if item["active_revision"] else "查看进度", key="recent-open-" + item["id"], on_click=navigate, args=("面试详情" if item["active_revision"] else "处理任务", item["id"]), width="stretch")
+
 
 STATUS = {"QUEUED": "排队中", "RUNNING": "处理中", "RETRY_WAIT": "等待重试", "FAILED": "失败", "CANCELLED": "已取消", "COMPLETED": "已完成"}
 STAGE = {"PREPROCESSING": "音频预处理", "ASR_UPLOADING": "上传录音", "ASR_SUBMITTING": "提交转写", "ASR_WAITING": "等待转写", "TRANSCRIPT_READY": "原文已保存", "EXTRACTING": "整理问答", "VALIDATING": "校验来源", "PERSISTING": "保存知识库", "EXPORTING": "导出笔记"}
@@ -86,8 +112,11 @@ def tasks(store):
     summary[0].metric("进行中", sum(counts.get(k, 0) for k in ("QUEUED", "RUNNING", "RETRY_WAIT")))
     summary[1].metric("需处理", sum(counts.get(k, 0) for k in ("FAILED", "CANCELLED")))
     summary[2].metric("已完成", counts.get("COMPLETED", 0))
-    selected = st.segmented_control("任务状态", ["全部", "进行中", "需处理", "已完成"], default="全部", key="task-filter", label_visibility="collapsed")
-    keyword = st.text_input("搜索任务", placeholder="输入面试标题查找任务", key="task-search", label_visibility="collapsed")
+    filter_column, search_column = st.columns([1.3, 1], vertical_alignment="center")
+    with filter_column:
+        selected = st.segmented_control("任务状态", ["全部", "进行中", "需处理", "已完成"], default="全部", key="task-filter", label_visibility="collapsed")
+    with search_column:
+        keyword = st.text_input("搜索任务", placeholder="输入面试标题查找任务", key="task-search", label_visibility="collapsed")
     conditions, values = ["i.deleted=0"], []
     states = {"进行中": "('QUEUED','RUNNING','RETRY_WAIT')", "需处理": "('FAILED','CANCELLED')", "已完成": "('COMPLETED')"}
     if selected in states:
@@ -105,25 +134,6 @@ def tasks(store):
             task_heading(row["title"], row["status"], STATUS.get(row["status"], row["status"]))
             st.caption(STAGE.get(row["stage"], row["stage"]))
             cp = json.loads(row["checkpoint"])
-            upload_audio = cp.get("upload_audio")
-            if upload_audio:
-                st.caption(f"上传副本：MP3 · {upload_audio['bitrate_kbps']} kbps / 路 · {upload_audio['track_count']} 路，共 {upload_audio['prepared_bytes'] / 1024 ** 2:.2f} MB；原始录音保留。")
-            for track_no, track in enumerate(cp.get("tracks", []), 1):
-                transfer = upload_summary(track)
-                if not transfer or not transfer.get("total_bytes"):
-                    continue
-                total = transfer["total_bytes"]
-                sent = transfer.get("transferred_bytes", 0)
-                confirmed = transfer.get("confirmed_bytes", 0)
-                active = row["status"] == "RUNNING" and row["stage"] == "ASR_UPLOADING" and transfer["status"] == "uploading"
-                fresh = active and now - transfer.get("updated_at", 0) < 5
-                rate = transfer.get("current_bps", 0) if fresh else 0
-                finished = transfer["status"] == "completed"
-                st.progress(min(1.0, sent / total), text=f"第 {track_no} 路上传：{sent / 1048576:.2f} / {total / 1048576:.2f} MB" + (" · 已完成" if finished else " · 等待恢复" if not active else ""))
-                st.caption(f"已确认 {confirmed / 1048576:.2f} MB / {transfer.get('confirmed_parts', 0)} 分片 · 当前 {rate / 1024:.1f} KB/s · 记录上传耗时 {duration(transfer.get('active_seconds', 0))} · 恢复 {transfer.get('resume_count', 0)} 次")
-                with st.expander(f"第 {track_no} 路上传记录"):
-                    st.caption("已确认分片可续传；未确认分片可能重传。耗时不含关闭程序和等待重试时间；异常退出时最后约一秒可能未记录。进度达到 100% 后仍需 OSS 合并确认。")
-                    st.dataframe([{"开始": local_time(a["started_at"]), "状态": {"uploading": "上传中", "interrupted": "中断", "cancelled": "已取消", "completed": "完成"}.get(a["status"], a["status"]), "接续 MB": round(a.get("resumed_bytes", 0) / 1048576, 2), "本次发送 MB": round(a["sent_bytes"] / 1048576, 2), "耗时秒": a["elapsed_seconds"], "平均 KB/s": round(a["average_bps"] / 1024, 1)} for a in transfer.get("attempts", [])], hide_index=True)
             progress = task_progress(row, cp, now)
             label = "全部处理完成" if row["status"] == "COMPLETED" else f"第 {progress['stage_index']} / {progress['stage_count']} 阶段 · {STAGE.get(row['stage'], row['stage'])}"
             if row["status"] == "QUEUED":
@@ -133,6 +143,27 @@ def tasks(store):
             clocks[0].metric("总历时" if row["status"] not in ("QUEUED", "RUNNING", "RETRY_WAIT") else "已历时", duration(progress["elapsed"]))
             clocks[1].metric("当前阶段耗时" if row["status"] == "RUNNING" else "最后阶段耗时", duration(progress["stage_elapsed"]))
             clocks[2].metric("已保存整理批次", f"{progress['done_chunks']} / {progress['total_chunks']}" if progress["total_chunks"] else "尚未分批")
+            if cp.get("upload_audio") or any(t.get("upload_state") for t in cp.get("tracks", [])):
+                with st.expander("录音上传详情", expanded=row["status"] == "RUNNING" and row["stage"] == "ASR_UPLOADING"):
+                    upload_audio = cp.get("upload_audio")
+                    if upload_audio:
+                        st.caption(f"上传副本：MP3 · {upload_audio['bitrate_kbps']} kbps / 路 · {upload_audio['track_count']} 路，共 {upload_audio['prepared_bytes'] / 1024 ** 2:.2f} MB；原始录音保留。")
+                    for track_no, track in enumerate(cp.get("tracks", []), 1):
+                        transfer = upload_summary(track)
+                        if not transfer or not transfer.get("total_bytes"):
+                            continue
+                        total = transfer["total_bytes"]
+                        sent = transfer.get("transferred_bytes", 0)
+                        confirmed = transfer.get("confirmed_bytes", 0)
+                        active = row["status"] == "RUNNING" and row["stage"] == "ASR_UPLOADING" and transfer["status"] == "uploading"
+                        fresh = active and now - transfer.get("updated_at", 0) < 5
+                        rate = transfer.get("current_bps", 0) if fresh else 0
+                        finished = transfer["status"] == "completed"
+                        st.progress(min(1.0, sent / total), text=f"第 {track_no} 路上传：{sent / 1048576:.2f} / {total / 1048576:.2f} MB" + (" · 已完成" if finished else " · 等待恢复" if not active else ""))
+                        st.caption(f"已确认 {confirmed / 1048576:.2f} MB / {transfer.get('confirmed_parts', 0)} 分片 · 当前 {rate / 1024:.1f} KB/s · 记录上传耗时 {duration(transfer.get('active_seconds', 0))} · 恢复 {transfer.get('resume_count', 0)} 次")
+                        with st.expander(f"第 {track_no} 路上传记录"):
+                            st.caption("已确认分片可续传；未确认分片可能重传。耗时不含关闭程序和等待重试时间；异常退出时最后约一秒可能未记录。进度达到 100% 后仍需 OSS 合并确认。")
+                            st.dataframe([{"开始": local_time(a["started_at"]), "状态": {"uploading": "上传中", "interrupted": "中断", "cancelled": "已取消", "completed": "完成"}.get(a["status"], a["status"]), "接续 MB": round(a.get("resumed_bytes", 0) / 1048576, 2), "本次发送 MB": round(a["sent_bytes"] / 1048576, 2), "耗时秒": a["elapsed_seconds"], "平均 KB/s": round(a["average_bps"] / 1024, 1)} for a in transfer.get("attempts", [])], hide_index=True)
             with st.expander("时间记录", expanded=False):
                 st.caption(f"提交：{local_time(row['created'])}　开始：{local_time(row['started_at'])}　结束：{local_time(row['finished_at'])}")
                 st.caption("北京时间 · 历时包含重试等待、暂停和程序关闭时间。" + ("历史任务时间按已有记录估算。" if row["timing_estimated"] else ""))
@@ -239,9 +270,10 @@ def library(settings, store):
     keyword = a.text_input("搜索问题、回答、主题或面试标题", placeholder="例如：Redis、项目难点")
     position = b.text_input("按岗位筛选")
     rows = store.search(keyword, position)
-    st.caption(f"显示 {len(rows)} 条，最多 100 条。")
-    for row in rows:
-        with st.container(border=True):
+    st.caption(f"找到 {len(rows)} 条问答 · 最多显示 100 条 · 支持搜索问题、原答、主题和面试标题")
+    for question_no, row in enumerate(rows, 1):
+        with st.container(border=True, key="knowledge-" + row["revision_id"] + row["id"]):
+            st.markdown(f'<div class="question-index">QUESTION {question_no:02d} · 面试问答</div>', unsafe_allow_html=True)
             st.subheader(row["question"])
             st.caption("面试原答")
             st.write(row["answer"] or "未作答或无法辨认。")
@@ -253,7 +285,7 @@ def library(settings, store):
                 st.session_state["navigation"] = "面试详情"
             st.button("查看面试与原文", key="open-" + row["revision_id"] + row["id"], on_click=open_interview, args=(row["interview_id"],))
     if not rows:
-        st.info("暂未找到问答。完成一次整理后即可在这里搜索。")
+        empty_state("暂未找到问答", "试试其他关键词，或先导入一场面试。")
 
 
 def details(settings, store):
@@ -404,85 +436,90 @@ def details(settings, store):
 
 def settings_page(settings, store):
     page_heading("设置与数据", "管理模型连接、调用预算与本地数据。", "应用设置")
-    from interview_agent.update_ui import update_panel
-    update_panel(settings.data_dir)
-    st.write("模型密钥只从系统环境变量读取。这里不展示、不保存密钥值。")
-    st.write("千问 AliApiKey：" + ("已读取" if settings.asr_key else "未配置"))
-    st.write("DeepSeek deepseek：" + ("已读取" if settings.deepseek_key else "未配置"))
-    for name, value in (("AliApiKey", settings.asr_key), ("deepseek", settings.deepseek_key)):
-        if value:
-            try:
-                validate_key(value, name)
-            except ProviderError as exc:
-                st.warning(str(exc))
-    st.write("OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET：" + ("已读取" if settings.oss_access_id and settings.oss_access_secret else "未配置"))
-    st.caption("已读取不等于已通过云端鉴权。修改系统环境变量后可刷新页面；Windows 会回读用户/系统环境。")
-    with st.expander("OSS 上传测试"):
-        st.caption("使用已保存的 OSS 配置，上传 1 MB 随机测试数据并清理；产生少量 OSS 请求和存储费用，不调用 ASR 或文本模型。小文件测速仅供参考。修改下方配置后请先保存。")
-        if st.button("开始上传测试（1 MB）"):
-            indicator = st.progress(0.0, text="正在连接 OSS…")
-            def show_test(value):
-                total = value.get("total_bytes", 1)
-                indicator.progress(min(1.0, value.get("transferred_bytes", 0) / total), text=f"测试上传：{value.get('current_bps', 0) / 1024:.1f} KB/s")
-            try:
-                test_upload(settings, store, show_test)
-            except ProviderError as exc:
-                st.error(str(exc))
-        test_path = settings.data_dir / "upload-test.json"
-        if test_path.exists():
-            try:
-                tested = read_json(test_path)
-                st.caption("最近测试：" + local_time(tested["created_at"]))
-                if tested["status"] == "completed":
-                    st.success(f"上传成功，总耗时 {tested['elapsed_seconds']:.2f} 秒。")
-                    attempts = tested.get("upload", {}).get("attempts", [])
-                    if attempts:
-                        st.caption(f"本次平均速度 {attempts[-1]['average_bps'] / 1024:.1f} KB/s（含上传协议开销）。")
-                else:
-                    st.error(tested.get("error", "上传测试失败。"))
-                if tested.get("cleanup_pending"):
-                    cleanup = store.one("SELECT status FROM cleanup WHERE id=?", (tested.get("cleanup_id", ""),))
-                    if cleanup and cleanup["status"] == "done":
-                        st.caption("测试数据已由后台清理。")
+    connection_tab, update_tab, data_tab = st.tabs(["模型与存储", "程序更新", "调用与备份"])
+    with connection_tab:
+        st.write("模型密钥只从系统环境变量读取。这里不展示、不保存密钥值。")
+        connection_cards(bool(settings.asr_key), bool(settings.deepseek_key), bool(settings.oss_access_id and settings.oss_access_secret and settings.oss_bucket and settings.oss_endpoint))
+        for name, value in (("AliApiKey", settings.asr_key), ("deepseek", settings.deepseek_key)):
+            if value:
+                try:
+                    validate_key(value, name)
+                except ProviderError as exc:
+                    st.warning(str(exc))
+        st.caption("已读取不等于已通过云端鉴权。修改系统环境变量后可刷新页面；Windows 会回读用户/系统环境。")
+        with st.expander("OSS 上传测试"):
+            st.caption("使用已保存的 OSS 配置，上传 1 MB 随机测试数据并清理；产生少量 OSS 请求和存储费用，不调用 ASR 或文本模型。小文件测速仅供参考。修改下方配置后请先保存。")
+            if st.button("开始上传测试（1 MB）"):
+                indicator = st.progress(0.0, text="正在连接 OSS…")
+                def show_test(value):
+                    total = value.get("total_bytes", 1)
+                    indicator.progress(min(1.0, value.get("transferred_bytes", 0) / total), text=f"测试上传：{value.get('current_bps', 0) / 1024:.1f} KB/s")
+                try:
+                    test_upload(settings, store, show_test)
+                except ProviderError as exc:
+                    st.error(str(exc))
+            test_path = settings.data_dir / "upload-test.json"
+            if test_path.exists():
+                try:
+                    tested = read_json(test_path)
+                    st.caption("最近测试：" + local_time(tested["created_at"]))
+                    if tested["status"] == "completed":
+                        st.success(f"上传成功，总耗时 {tested['elapsed_seconds']:.2f} 秒。")
+                        attempts = tested.get("upload", {}).get("attempts", [])
+                        if attempts:
+                            st.caption(f"本次平均速度 {attempts[-1]['average_bps'] / 1024:.1f} KB/s（含上传协议开销）。")
                     else:
-                        st.warning("测试数据尚未清理，后台会重试；请检查 OSS 删除与取消分片权限。")
-            except (ValueError, OSError, KeyError):
-                st.caption("最近测试记录不可读取，请重新测试。")
-    with st.form("settings"):
-        st.subheader("录音转写")
-        asr_model = st.text_input("阿里云 ASR 模型", settings.asr_model)
-        asr_base = st.text_input("阿里云 API 基础地址", settings.asr_base)
-        bucket = st.text_input("私有 OSS bucket", settings.oss_bucket)
-        endpoint = st.text_input("OSS endpoint（HTTPS）", settings.oss_endpoint, placeholder="https://oss-cn-beijing.aliyuncs.com")
-        st.subheader("文本整理")
-        llm_model = st.text_input("DeepSeek 模型", settings.llm_model)
-        llm_base = st.text_input("DeepSeek API 基础地址", settings.llm_base)
-        st.subheader("预算与限制")
-        budget = st.number_input("每月调用费用预留上限（元）", min_value=1.0, value=float(settings.monthly_budget_cny))
-        audio_reserve = st.number_input("每小时音频预留费用（每声道，元）", min_value=0.1, value=float(settings.audio_reserve_per_hour))
-        chunk_reserve = st.number_input("每次文本调用预留费用（元）", min_value=0.01, value=float(settings.llm_reserve_per_chunk))
-        max_mb = st.number_input("上传上限（MB）", min_value=1, max_value=500, value=int(settings.max_upload_mb))
-        max_minutes = st.number_input("音频时长上限（分钟）", min_value=1, max_value=120, value=int(settings.max_audio_minutes))
-        if st.form_submit_button("保存非敏感配置", type="primary"):
-            settings.asr_model, settings.asr_base = asr_model.strip(), asr_base.strip()
-            settings.oss_bucket, settings.oss_endpoint = bucket.strip(), endpoint.strip()
-            settings.llm_model, settings.llm_base = llm_model.strip(), llm_base.strip()
-            settings.monthly_budget_cny, settings.audio_reserve_per_hour, settings.llm_reserve_per_chunk = budget, audio_reserve, chunk_reserve
-            settings.max_upload_mb, settings.max_audio_minutes = max_mb, max_minutes
-            try:
-                settings.save()
-                st.success("已保存。已提交任务保留其模型配置，新预算在下一个任务生效。")
-            except ValueError as exc:
-                st.error(str(exc))
-    st.caption("费用为保守预留额，并非实际账单。失败和超时调用也保留预留，防止低估；实际用量另存。")
-    calls = store.rows("SELECT provider,model,status,reserve_cny,usage,created FROM calls ORDER BY created DESC LIMIT 50")
-    if calls:
-        st.dataframe(calls, hide_index=True, width="stretch")
-    st.write("数据目录：", str(settings.data_dir))
-    if st.button("创建一致性数据库备份"):
-        backup = store.backup()
-        st.success("数据库备份完成：" + str(backup))
-    st.caption("此按钮备份数据库；完整恢复还需同时保留 media、transcripts 和 jobs 目录。")
+                        st.error(tested.get("error", "上传测试失败。"))
+                    if tested.get("cleanup_pending"):
+                        cleanup = store.one("SELECT status FROM cleanup WHERE id=?", (tested.get("cleanup_id", ""),))
+                        if cleanup and cleanup["status"] == "done":
+                            st.caption("测试数据已由后台清理。")
+                        else:
+                            st.warning("测试数据尚未清理，后台会重试；请检查 OSS 删除与取消分片权限。")
+                except (ValueError, OSError, KeyError):
+                    st.caption("最近测试记录不可读取，请重新测试。")
+        with st.form("settings"):
+            st.subheader("录音转写")
+            asr_model = st.text_input("阿里云 ASR 模型", settings.asr_model)
+            asr_base = st.text_input("阿里云 API 基础地址", settings.asr_base)
+            storage_column, endpoint_column = st.columns(2)
+            bucket = storage_column.text_input("私有 OSS bucket", settings.oss_bucket)
+            endpoint = endpoint_column.text_input("OSS endpoint（HTTPS）", settings.oss_endpoint, placeholder="https://oss-cn-beijing.aliyuncs.com")
+            st.subheader("文本整理")
+            llm_model = st.text_input("DeepSeek 模型", settings.llm_model)
+            llm_base = st.text_input("DeepSeek API 基础地址", settings.llm_base)
+            with st.expander("预算与上传限制"):
+                st.subheader("预算与限制")
+                budget = st.number_input("每月调用费用预留上限（元）", min_value=1.0, value=float(settings.monthly_budget_cny))
+                audio_reserve = st.number_input("每小时音频预留费用（每声道，元）", min_value=0.1, value=float(settings.audio_reserve_per_hour))
+                chunk_reserve = st.number_input("每次文本调用预留费用（元）", min_value=0.01, value=float(settings.llm_reserve_per_chunk))
+                max_mb = st.number_input("上传上限（MB）", min_value=1, max_value=500, value=int(settings.max_upload_mb))
+                max_minutes = st.number_input("音频时长上限（分钟）", min_value=1, max_value=120, value=int(settings.max_audio_minutes))
+            if st.form_submit_button("保存非敏感配置", type="primary"):
+                settings.asr_model, settings.asr_base = asr_model.strip(), asr_base.strip()
+                settings.oss_bucket, settings.oss_endpoint = bucket.strip(), endpoint.strip()
+                settings.llm_model, settings.llm_base = llm_model.strip(), llm_base.strip()
+                settings.monthly_budget_cny, settings.audio_reserve_per_hour, settings.llm_reserve_per_chunk = budget, audio_reserve, chunk_reserve
+                settings.max_upload_mb, settings.max_audio_minutes = max_mb, max_minutes
+                try:
+                    settings.save()
+                    st.success("已保存。已提交任务保留其模型配置，新预算在下一个任务生效。")
+                except ValueError as exc:
+                    st.error(str(exc))
+        st.caption("费用为保守预留额，并非实际账单。失败和超时调用也保留预留，防止低估；实际用量另存。")
+    with update_tab:
+        from interview_agent.update_ui import update_panel
+        update_panel(settings.data_dir)
+    with data_tab:
+        section_label("数据", "调用记录与本地备份", "查看费用预留，备份你的面试知识库。")
+        calls = store.rows("SELECT provider,model,status,reserve_cny,usage,created FROM calls ORDER BY created DESC LIMIT 50")
+        if calls:
+            st.dataframe(calls, hide_index=True, width="stretch")
+        st.write("数据目录：", str(settings.data_dir))
+        if st.button("创建一致性数据库备份"):
+            backup = store.backup()
+            st.success("数据库备份完成：" + str(backup))
+        st.caption("此按钮备份数据库；完整恢复还需同时保留 media、transcripts 和 jobs 目录。")
 
 
 def main():
@@ -502,6 +539,7 @@ def main():
         navigation = st.radio("导航", ["导入面试", "处理任务", "问答知识库", "面试详情", "设置与数据"], key="navigation", label_visibility="collapsed")
         st.divider()
         st.caption(f"v{__version__} · 本地应用 · 云端模型")
+        st.markdown('<div class="sidebar-note">把每一次面试，变成下一次的准备。</div>', unsafe_allow_html=True)
         status_file = settings.data_dir / "worker-status.json"
         alive = False
         if status_file.exists():

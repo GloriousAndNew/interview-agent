@@ -133,12 +133,12 @@ def test_update_panel_check_download_state_and_maintenance(settings, store, monk
     from interview_agent.files import atomic_json
     monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
     # The source application must never initiate automatic installation.
-    atomic_json(settings.data_dir / "updates/check.json", {"checked_at": 1, "available": True, "version": "0.1.4", "size": 1048576, "notes": "Update notes"})
-    updates.status(settings.data_dir, phase="ready", version="0.1.4")
+    atomic_json(settings.data_dir / "updates/check.json", {"checked_at": 1, "available": True, "version": "0.1.5", "size": 1048576, "notes": "Update notes"})
+    updates.status(settings.data_dir, phase="ready", version="0.1.5")
     app = AppTest.from_file(APP, default_timeout=20).run()
     app.sidebar.radio[0].set_value("设置与数据").run()
     assert not app.exception
-    assert any("发现新版 v0.1.4" in item.value for item in app.info)
+    assert any("发现新版 v0.1.5" in item.value for item in app.info)
     assert any("源码运行" in item.value for item in app.caption)
     assert not any(button.label == "安装更新并重启" for button in app.button)
     atomic_json(settings.data_dir / "updates/installing.json", {})
@@ -146,3 +146,19 @@ def test_update_panel_check_download_state_and_maintenance(settings, store, monk
     assert not app.exception
     assert any("操作已暂停" in item.value for item in app.info)
     assert not app.sidebar.radio
+
+
+def test_home_recent_interview_navigation_and_settings_groups(settings, store, submitted, monkeypatch):
+    Pipeline(settings, store, llm_factory=FakeLLM).run_once()
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    assert not app.exception
+    assert any(e.label == "录音高级选项" for e in app.expander)
+    next(b for b in app.button if b.label == "查看面试").click().run()
+    assert not app.exception
+    assert app.sidebar.radio[0].value == "面试详情"
+    assert app.session_state["selected_interview"] == submitted[0]
+    app.sidebar.radio[0].set_value("设置与数据").run()
+    assert not app.exception
+    assert {"模型与存储", "程序更新", "调用与备份"}.issubset({tab.label for tab in app.tabs})
+    assert any(e.label == "预算与上传限制" for e in app.expander)
