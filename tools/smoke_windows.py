@@ -49,15 +49,17 @@ def main():
         with opener.open(f"http://127.0.0.1:{state['port']}/", timeout=5) as response:
             assert b"<html" in response.read().lower()
         ffmpeg = next((executable.parent / "_internal/imageio_ffmpeg/binaries").glob("*.exe"))
-        source, output = temporary / "示例录音.wav", temporary / "converted.wav"
+        source, compressed, output = temporary / "示例录音.wav", temporary / "upload-copy.mp3", temporary / "converted.wav"
         with wave.open(str(source), "wb") as audio:
-            audio.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
-            audio.writeframes(b"\0\0" * 8000)
-        result = subprocess.run([str(ffmpeg), "-v", "error", "-y", "-i", str(source), "-ar", "16000", str(output)], capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+            audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"\0\0" * 16000)
+        encoded = subprocess.run([str(ffmpeg), "-v", "error", "-y", "-i", str(source), "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k", str(compressed)], capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+        assert encoded.returncode == 0 and compressed.stat().st_size < source.stat().st_size
+        result = subprocess.run([str(ffmpeg), "-v", "error", "-y", "-i", str(compressed), str(output)], capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
         assert result.returncode == 0
         with wave.open(str(output), "rb") as audio:
             assert audio.getframerate() == 16000 and audio.getnframes() == 16000
-        report = {"health": "ok", "worker": "ok", "ffmpeg": "ok", "no_python_on_path": True, "no_cloud_calls": True, "port": state["port"], "data_dir": str(data), "launcher_pid": process.pid, "server_pid": state["server_pid"], "worker_pid": state["worker_pid"]}
+        report = {"health": "ok", "worker": "ok", "ffmpeg": "ok", "mp3_compression": "ok", "no_python_on_path": True, "no_cloud_calls": True, "port": state["port"], "data_dir": str(data), "launcher_pid": process.pid, "server_pid": state["server_pid"], "worker_pid": state["worker_pid"]}
         print(json.dumps(report, ensure_ascii=True), flush=True)
         keep = args.keep_running
     finally:

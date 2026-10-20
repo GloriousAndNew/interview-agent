@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+from interview_agent import __version__
 from interview_agent.config import Settings
 from interview_agent.db import BudgetExceeded, Store
 from interview_agent.document_import import DocumentImportError
@@ -20,6 +21,8 @@ from interview_agent.progress import duration, local_time, task_progress
 from interview_agent.services import export_revision, request_delete, submit, timestamp
 from interview_agent.ui import apply_style, navigate, page_heading, tags, task_heading
 from interview_agent.reference_answers import answer_state, generate as generate_reference, markdown as reference_markdown
+from interview_agent.uploads import upload_summary
+from interview_agent.upload_test import test_upload
 
 
 st.set_page_config(page_title="面试录音整理助手", page_icon="🎙️", layout="wide")
@@ -102,6 +105,25 @@ def tasks(store):
             task_heading(row["title"], row["status"], STATUS.get(row["status"], row["status"]))
             st.caption(STAGE.get(row["stage"], row["stage"]))
             cp = json.loads(row["checkpoint"])
+            upload_audio = cp.get("upload_audio")
+            if upload_audio:
+                st.caption(f"上传副本：MP3 · {upload_audio['bitrate_kbps']} kbps / 路 · {upload_audio['track_count']} 路，共 {upload_audio['prepared_bytes'] / 1024 ** 2:.2f} MB；原始录音保留。")
+            for track_no, track in enumerate(cp.get("tracks", []), 1):
+                transfer = upload_summary(track)
+                if not transfer or not transfer.get("total_bytes"):
+                    continue
+                total = transfer["total_bytes"]
+                sent = transfer.get("transferred_bytes", 0)
+                confirmed = transfer.get("confirmed_bytes", 0)
+                active = row["status"] == "RUNNING" and row["stage"] == "ASR_UPLOADING" and transfer["status"] == "uploading"
+                fresh = active and now - transfer.get("updated_at", 0) < 5
+                rate = transfer.get("current_bps", 0) if fresh else 0
+                finished = transfer["status"] == "completed"
+                st.progress(min(1.0, sent / total), text=f"第 {track_no} 路上传：{sent / 1048576:.2f} / {total / 1048576:.2f} MB" + (" · 已完成" if finished else " · 等待恢复" if not active else ""))
+                st.caption(f"已确认 {confirmed / 1048576:.2f} MB / {transfer.get('confirmed_parts', 0)} 分片 · 当前 {rate / 1024:.1f} KB/s · 记录上传耗时 {duration(transfer.get('active_seconds', 0))} · 恢复 {transfer.get('resume_count', 0)} 次")
+                with st.expander(f"第 {track_no} 路上传记录"):
+                    st.caption("已确认分片可续传；未确认分片可能重传。耗时不含关闭程序和等待重试时间；异常退出时最后约一秒可能未记录。进度达到 100% 后仍需 OSS 合并确认。")
+                    st.dataframe([{"开始": local_time(a["started_at"]), "状态": {"uploading": "上传中", "interrupted": "中断", "cancelled": "已取消", "completed": "完成"}.get(a["status"], a["status"]), "接续 MB": round(a.get("resumed_bytes", 0) / 1048576, 2), "本次发送 MB": round(a["sent_bytes"] / 1048576, 2), "耗时秒": a["elapsed_seconds"], "平均 KB/s": round(a["average_bps"] / 1024, 1)} for a in transfer.get("attempts", [])], hide_index=True)
             progress = task_progress(row, cp, now)
             label = "全部处理完成" if row["status"] == "COMPLETED" else f"第 {progress['stage_index']} / {progress['stage_count']} 阶段 · {STAGE.get(row['stage'], row['stage'])}"
             if row["status"] == "QUEUED":
@@ -382,6 +404,8 @@ def details(settings, store):
 
 def settings_page(settings, store):
     page_heading("设置与数据", "管理模型连接、调用预算与本地数据。", "应用设置")
+    from interview_agent.update_ui import update_panel
+    update_panel(settings.data_dir)
     st.write("模型密钥只从系统环境变量读取。这里不展示、不保存密钥值。")
     st.write("千问 AliApiKey：" + ("已读取" if settings.asr_key else "未配置"))
     st.write("DeepSeek deepseek：" + ("已读取" if settings.deepseek_key else "未配置"))
@@ -393,6 +417,37 @@ def settings_page(settings, store):
                 st.warning(str(exc))
     st.write("OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET：" + ("已读取" if settings.oss_access_id and settings.oss_access_secret else "未配置"))
     st.caption("已读取不等于已通过云端鉴权。修改系统环境变量后可刷新页面；Windows 会回读用户/系统环境。")
+    with st.expander("OSS 上传测试"):
+        st.caption("使用已保存的 OSS 配置，上传 1 MB 随机测试数据并清理；产生少量 OSS 请求和存储费用，不调用 ASR 或文本模型。小文件测速仅供参考。修改下方配置后请先保存。")
+        if st.button("开始上传测试（1 MB）"):
+            indicator = st.progress(0.0, text="正在连接 OSS…")
+            def show_test(value):
+                total = value.get("total_bytes", 1)
+                indicator.progress(min(1.0, value.get("transferred_bytes", 0) / total), text=f"测试上传：{value.get('current_bps', 0) / 1024:.1f} KB/s")
+            try:
+                test_upload(settings, store, show_test)
+            except ProviderError as exc:
+                st.error(str(exc))
+        test_path = settings.data_dir / "upload-test.json"
+        if test_path.exists():
+            try:
+                tested = read_json(test_path)
+                st.caption("最近测试：" + local_time(tested["created_at"]))
+                if tested["status"] == "completed":
+                    st.success(f"上传成功，总耗时 {tested['elapsed_seconds']:.2f} 秒。")
+                    attempts = tested.get("upload", {}).get("attempts", [])
+                    if attempts:
+                        st.caption(f"本次平均速度 {attempts[-1]['average_bps'] / 1024:.1f} KB/s（含上传协议开销）。")
+                else:
+                    st.error(tested.get("error", "上传测试失败。"))
+                if tested.get("cleanup_pending"):
+                    cleanup = store.one("SELECT status FROM cleanup WHERE id=?", (tested.get("cleanup_id", ""),))
+                    if cleanup and cleanup["status"] == "done":
+                        st.caption("测试数据已由后台清理。")
+                    else:
+                        st.warning("测试数据尚未清理，后台会重试；请检查 OSS 删除与取消分片权限。")
+            except (ValueError, OSError, KeyError):
+                st.caption("最近测试记录不可读取，请重新测试。")
     with st.form("settings"):
         st.subheader("录音转写")
         asr_model = st.text_input("阿里云 ASR 模型", settings.asr_model)
@@ -437,11 +492,16 @@ def main():
     except (ValueError, OSError):
         st.error("本地配置无法加载，请检查数据目录 settings.json 的格式和权限。")
         st.stop()
+    if (settings.data_dir / "updates/installing.json").exists():
+        st.info("程序正在更新，操作已暂停。完成后会自动重新启动。")
+        from interview_agent.update_ui import update_panel
+        update_panel(settings.data_dir)
+        st.stop()
     with st.sidebar:
         st.markdown('<div class="sidebar-brand"><span class="brand-icon">面</span><div><strong>面试知识库</strong><small>记录 · 整理 · 复盘</small></div></div>', unsafe_allow_html=True)
         navigation = st.radio("导航", ["导入面试", "处理任务", "问答知识库", "面试详情", "设置与数据"], key="navigation", label_visibility="collapsed")
         st.divider()
-        st.caption("本地应用 · 云端模型")
+        st.caption(f"v{__version__} · 本地应用 · 云端模型")
         status_file = settings.data_dir / "worker-status.json"
         alive = False
         if status_file.exists():

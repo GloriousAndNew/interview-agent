@@ -5,6 +5,7 @@ import argparse
 import json
 import multiprocessing
 import os
+import shutil
 from pathlib import Path
 import socket
 import subprocess
@@ -14,8 +15,10 @@ import urllib.error
 import urllib.request
 import webbrowser
 
+from interview_agent import __version__
 from interview_agent.config import Settings, default_dir, environment
 from interview_agent.files import atomic_json
+from interview_agent.update_bundle import UpdateError, verify_folder, version
 
 
 def resource_root() -> Path:
@@ -86,7 +89,77 @@ def stop_children(children):
             child.wait(timeout=5)
 
 
-def run_launcher(settings: Settings, port: int, *, headless=False, no_browser=False):
+def prepare_update(settings, instance, *, headless, no_browser):
+    from interview_agent.db import Store, uid
+    from interview_agent.updates import read_state, status
+    data = settings.data_dir
+    request = data / "updates/install-request.json"
+    if not request.exists():
+        return False
+    try:
+        value = json.loads(request.read_text(encoding="utf-8"))
+        state = read_state(data)
+        if not getattr(sys, "frozen", False) or value.get("instance_token") != instance["instance_token"] or value.get("version") != state.get("version") or state.get("phase") != "waiting":
+            raise UpdateError("更新请求已失效，请重新下载或确认安装。")
+        if version(state["version"]) <= version(__version__):
+            raise UpdateError("目标版本不高于当前版本。")
+        store = Store(data)
+        busy_query = "SELECT id FROM jobs WHERE status IN ('RUNNING','QUEUED','RETRY_WAIT') UNION ALL SELECT id FROM reference_answers WHERE status='RUNNING' AND lease_until>? LIMIT 1"
+        if store.one(busy_query, (time.time(),)):
+            return False
+        staged = data / "updates" / ("v" + state["version"]) / "staged/interview-agent"
+        verify_folder(staged, state["version"], state["manifest_hash"])
+        install = Path(sys.executable).resolve().parent
+        if data.resolve().is_relative_to(install) or install.is_relative_to(data.resolve()):
+            raise UpdateError("自动更新要求知识库数据保存在程序目录之外。")
+        token = uid()
+        probe = install.parent / (".interview-agent-write-test-" + token)
+        probe.touch(exist_ok=False)
+        probe.unlink()
+        gate = data / "updates/installing.json"
+        atomic_json(gate, {"token": token})
+        with store.transaction() as con:
+            if con.execute(busy_query, (time.time(),)).fetchone():
+                gate.unlink(missing_ok=True)
+                return False
+        plan = {"token": token, "version": state["version"], "old_version": __version__, "manifest_hash": state["manifest_hash"],
+                "data_dir": str(data.resolve()), "install_dir": str(install), "staged_dir": str(staged.resolve()),
+                "port": instance["port"], "parent_pid": os.getpid(), "headless": headless, "no_browser": no_browser}
+        plan_path = data / "updates/install-plan.json"
+        atomic_json(plan_path, plan)
+        atomic_json(data / "updates/install-journal.json", {"token": token, "phase": "pending"})
+        helper_dir = data / "updates" / ("helper-" + token)
+        helper_dir.mkdir()
+        helper = helper_dir / "interview-agent-updater.exe"
+        shutil.copy2(install / helper.name, helper)
+        subprocess.Popen([str(helper), "--plan", str(plan_path)], cwd=data, env=dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1"), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        request.unlink(missing_ok=True)
+        return True
+    except Exception as exc:
+        (data / "updates/installing.json").unlink(missing_ok=True)
+        request.unlink(missing_ok=True)
+        status(data, phase="failed", message=str(exc) if isinstance(exc, UpdateError) else "无法启动更新器，请检查程序目录、权限和磁盘空间。")
+        return False
+
+
+def recover_update(settings, update_token):
+    data = settings.data_dir
+    gate = data / "updates/installing.json"
+    if not gate.exists():
+        return
+    value = json.loads(gate.read_text(encoding="utf-8"))
+    if update_token and update_token == value.get("token"):
+        return
+    if not getattr(sys, "frozen", False):
+        raise UpdateError("数据目录处于更新维护状态，请使用原 EXE 完成恢复。")
+    plan_path = data / "updates/install-plan.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    helper = data / "updates" / ("helper-" + plan["token"]) / "interview-agent-updater.exe"
+    subprocess.Popen([str(helper), "--plan", str(plan_path), "--recover", "--recover-parent", str(os.getpid())], cwd=data, env=dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1"), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    raise SystemExit(0)
+
+
+def run_launcher(settings: Settings, port: int, *, headless=False, no_browser=False, update_token=""):
     from worker import single_worker
     state = settings.data_dir / "desktop-instance.json"
     stop_file = settings.data_dir / "desktop-stop"
@@ -114,13 +187,16 @@ def run_launcher(settings: Settings, port: int, *, headless=False, no_browser=Fa
             stream = open(logs / name, "ab")
             streams.append(stream)
             children.append(subprocess.Popen(command(mode, port, settings.data_dir), cwd=settings.data_dir, env=env, stdout=stream, stderr=stream, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)))
-        atomic_json(state, {"pid": os.getpid(), "server_pid": children[1].pid, "worker_pid": children[0].pid, "port": port, "started_at": time.time()})
+        from interview_agent.db import uid
+        instance = {"pid": os.getpid(), "server_pid": children[1].pid, "worker_pid": children[0].pid, "port": port, "started_at": time.time(),
+                    "instance_token": uid(), "frozen": bool(getattr(sys, "frozen", False)), "version": __version__, "update_token": update_token}
+        atomic_json(state, instance)
         url = f"http://127.0.0.1:{port}"
         if not headless:
             import tkinter as tk
             from tkinter import ttk
             window = tk.Tk()
-            window.title("面试知识库 · 本地服务")
+            window.title(f"面试知识库 v{__version__} · 本地服务")
             window.geometry("510x305")
             window.minsize(470, 290)
             window.configure(bg="#f5f7f9")
@@ -144,6 +220,8 @@ def run_launcher(settings: Settings, port: int, *, headless=False, no_browser=Fa
             nonlocal opened
             if stop_file.exists():
                 return False
+            if not (settings.data_dir / "updates/installing.json").exists() and prepare_update(settings, instance, headless=headless, no_browser=no_browser):
+                return False
             if children[1].poll() is not None:
                 raise RuntimeError("页面服务未能运行，请查看 logs/desktop-server.log。")
             # An existing source worker can own the same data directory. Retry the
@@ -158,6 +236,9 @@ def run_launcher(settings: Settings, port: int, *, headless=False, no_browser=Fa
                     status_text.set("本地服务已启动，任务会在后台处理。")
                 if not no_browser:
                     webbrowser.open(url)
+                if not update_token:
+                    from interview_agent.updates import auto_check
+                    auto_check(settings.data_dir)
             if not opened and time.monotonic() - started > 90:
                 raise RuntimeError("启动等待超时，请查看本地日志。")
             return True
@@ -197,6 +278,7 @@ def main():
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--update-token", default="")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
@@ -218,7 +300,8 @@ def main():
         server(settings, args.port)
     else:
         try:
-            run_launcher(settings, args.port, headless=args.headless, no_browser=args.no_browser)
+            recover_update(settings, args.update_token)
+            run_launcher(settings, args.port, headless=args.headless, no_browser=args.no_browser, update_token=args.update_token)
         except Exception:
             import traceback
             traceback.print_exc()

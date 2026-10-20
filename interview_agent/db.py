@@ -140,6 +140,8 @@ class Store:
     def create(self, title: str, metadata: dict, config: dict, checkpoint: dict, media: dict | None = None) -> tuple[str, str]:
         now, interview_id, job_id = time.time(), uid(), uid()
         with self.transaction() as con:
+            if (self.root / "updates/installing.json").exists():
+                raise ValueError("正在安装更新，请等待程序重启后再提交。")
             media_id = None
             if media:
                 old = con.execute("SELECT id FROM media WHERE sha256=?", (media["sha256"],)).fetchone()
@@ -153,6 +155,8 @@ class Store:
     def claim(self, owner: str) -> dict | None:
         now = time.time()
         with self.transaction() as con:
+            if (self.root / "updates/installing.json").exists():
+                return None
             # Queued cancellations need no network calls or active lease.
             con.execute("UPDATE jobs SET status='CANCELLED',updated=?,finished_at=? WHERE cancel=1 AND (status IN ('QUEUED','RETRY_WAIT') OR (status='RUNNING' AND lease_until<?))", (now, now, now))
             row = con.execute("SELECT j.* FROM jobs j JOIN interviews i ON i.id=j.interview_id WHERE i.deleted=0 AND j.cancel=0 AND ((j.status IN ('QUEUED','RETRY_WAIT') AND j.retry_at<=?) OR (j.status='RUNNING' AND j.lease_until<?)) ORDER BY j.created LIMIT 1", (now, now)).fetchone()

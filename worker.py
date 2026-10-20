@@ -50,6 +50,9 @@ def main():
             except OSError:
                 # A status-file sharing conflict must not terminate the worker.
                 pass
+            if (settings.data_dir / "updates/installing.json").exists():
+                time.sleep(2)
+                continue
             if pipeline.run_once():
                 pipeline.maintenance()
                 continue

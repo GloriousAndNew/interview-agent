@@ -4,6 +4,9 @@ import re
 import subprocess
 from pathlib import Path
 
+UPLOAD_BITRATE_KBPS = 64
+UPLOAD_SAMPLE_RATE = 16000
+
 
 class AudioProcessingError(ValueError):
     """Known audio errors whose messages do not expose subprocess inputs."""
@@ -33,11 +36,21 @@ def probe(path: Path) -> dict:
 
 
 def prepare(path: Path, output: Path, channel: int | None = None) -> None:
+    if path.resolve() == output.resolve():
+        raise AudioProcessingError("上传副本不能覆盖原始录音。")
+    if output.suffix.lower() not in (".mp3", ".wav"):
+        raise AudioProcessingError("上传副本仅支持 MP3 或兼容的 WAV 格式。")
     output.parent.mkdir(parents=True, exist_ok=True)
-    command = [executable(), "-v", "error", "-y", "-i", str(path), "-vn"]
+    command = [executable(), "-v", "error", "-y", "-i", str(path), "-vn", "-map_metadata", "-1"]
     if channel is not None:
         command += ["-af", f"pan=mono|c0=c{channel}"]
-    command += ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(output)]
+    command += ["-ac", "1", "-ar", str(UPLOAD_SAMPLE_RATE)]
+    if output.suffix.lower() == ".mp3":
+        command += ["-c:a", "libmp3lame", "-b:a", f"{UPLOAD_BITRATE_KBPS}k"]
+    else:
+        # Retain PCM support for older utilities and existing checkpoints.
+        command += ["-c:a", "pcm_s16le"]
+    command.append(str(output))
     try:
         result = subprocess.run(command, capture_output=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:

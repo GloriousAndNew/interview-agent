@@ -1,7 +1,13 @@
 """Package only the generated application folder, never local interview data."""
 from hashlib import sha256
 from pathlib import Path
+from runpy import run_path
 from zipfile import ZipFile, ZIP_DEFLATED
+import sys
+import shutil
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from interview_agent.update_bundle import write_manifest, verify_folder
 
 
 def main():
@@ -10,7 +16,12 @@ def main():
     if not (folder / "interview-agent.exe").is_file() or not (folder / "_internal").is_dir():
         raise SystemExit("Build the application folder first.")
     (folder / "使用说明.md").write_bytes((root / "docs/windows-exe.md").read_bytes())
-    target = root / "dist/interview-agent-windows-x64.zip"
+    (folder / "automatic-updates.md").write_bytes((root / "docs/automatic-updates.md").read_bytes())
+    version = run_path(str(root / "interview_agent/__init__.py"))["__version__"]
+    shutil.copy2(root / "dist/interview-agent-updater.exe", folder / "interview-agent-updater.exe")
+    write_manifest(folder, version)
+    verify_folder(folder, version)
+    target = root / f"dist/interview-agent-v{version}-windows-x64.zip"
     partial = target.with_suffix(".zip.tmp")
     with ZipFile(partial, "w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
         for file in sorted(folder.rglob("*")):

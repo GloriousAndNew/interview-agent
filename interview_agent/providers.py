@@ -219,12 +219,23 @@ class OSSStorage:
         auth = oss2.StsAuth(settings.oss_access_id, settings.oss_access_secret, settings.oss_token) if settings.oss_token else oss2.Auth(settings.oss_access_id, settings.oss_access_secret)
         self.bucket = oss2.Bucket(auth, settings.oss_endpoint, settings.oss_bucket, connect_timeout=30)
 
-    def upload(self, key: str, path: Path) -> str:
+    def upload(self, key: str, path: Path, *, state=None, save=None, check=None) -> str:
+        import oss2
+        from .uploads import multipart_upload
         try:
-            self.bucket.put_object_from_file(key, str(path), headers={"x-oss-object-acl": "private"})
+            multipart_upload(self.bucket, key, path, state if state is not None else {}, save or (lambda _: None), check or (lambda: None))
             return self.bucket.sign_url("GET", key, 48 * 3600, slash_safe=True)
-        except Exception:
-            raise ProviderError("OSS 上传失败，请检查 endpoint、bucket 和对象读写权限。", retryable=True) from None
+        except oss2.exceptions.OssError as exc:
+            if exc.status in (401, 403):
+                raise ProviderError("OSS 鉴权或分片权限不足，请检查凭据及 PutObject、GetObject、ListParts、AbortMultipartUpload 权限。") from None
+            raise ProviderError("OSS 上传连接失败；已完成分片已保留，将从检查点续传。请检查 endpoint、bucket 和网络。", retryable=True) from None
+
+    def abort(self, key: str, upload_id: str) -> None:
+        import oss2
+        try:
+            self.bucket.abort_multipart_upload(key, upload_id)
+        except oss2.exceptions.NoSuchUpload:
+            pass
 
     def signed_url(self, key: str) -> str:
         return self.bucket.sign_url("GET", key, 48 * 3600, slash_safe=True)

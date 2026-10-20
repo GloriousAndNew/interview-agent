@@ -88,3 +88,61 @@ def test_generate_high_score_in_library_and_read_in_detail(settings, store, subm
     next(b for b in app.button if b.label == "查看面试与原文").click().run()
     assert not app.exception
     assert any(m.value == "这是一份独立保存的参考答案" for m in app.markdown)
+
+
+def test_task_upload_progress_and_attempt_records(settings, store, submitted, monkeypatch):
+    import time
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    state = {"status": "uploading", "total_bytes": 2097152, "transferred_bytes": 1572864,
+             "confirmed_bytes": 1048576, "confirmed_parts": 1, "current_bps": 102400,
+             "active_seconds": 15, "updated_at": time.time(), "resume_count": 1,
+             "attempts": [{"started_at": time.time(), "status": "uploading", "sent_bytes": 524288,
+                           "elapsed_seconds": 5, "average_bps": 104857.6, "resumed_bytes": 1048576}]}
+    job = store.claim("ui-test")
+    job["checkpoint"]["tracks"] = [{"upload_state": state}]
+    store.checkpoint(job, "ASR_UPLOADING")
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    app.sidebar.radio[0].set_value("处理任务").run()
+    assert not app.exception
+    assert any("已确认 1.00 MB / 1 分片" in c.value and "100.0 KB/s" in c.value for c in app.caption)
+    assert any(p.value == 75 and "第 1 路上传" in p.proto.text for p in app.get("progress"))
+    assert any(e.label == "第 1 路上传记录" for e in app.expander)
+
+
+def test_settings_upload_test_button_and_saved_result(settings, store, monkeypatch):
+    from test_uploads import Bucket
+    bucket = Bucket()
+    # App's imported function still resolves this module's factory default, so
+    # replace the OSS instance initializer, keeping all transfer logic exercised.
+    from interview_agent.providers import OSSStorage
+    monkeypatch.setattr(OSSStorage, "__init__", lambda self, _: setattr(self, "bucket", bucket))
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    app.sidebar.radio[0].set_value("设置与数据").run()
+    next(b for b in app.button if b.label == "开始上传测试（1 MB）").click().run()
+    assert not app.exception
+    assert any("上传成功" in s.value for s in app.success)
+    assert any("平均速度" in c.value for c in app.caption)
+    assert not bucket.objects and not bucket.sessions
+    assert (settings.data_dir / "upload-test.json").exists()
+
+
+def test_update_panel_check_download_state_and_maintenance(settings, store, monkeypatch):
+    import httpx
+    from interview_agent import updates
+    from interview_agent.files import atomic_json
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    # The source application must never initiate automatic installation.
+    atomic_json(settings.data_dir / "updates/check.json", {"checked_at": 1, "available": True, "version": "0.1.4", "size": 1048576, "notes": "Update notes"})
+    updates.status(settings.data_dir, phase="ready", version="0.1.4")
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    app.sidebar.radio[0].set_value("设置与数据").run()
+    assert not app.exception
+    assert any("发现新版 v0.1.4" in item.value for item in app.info)
+    assert any("源码运行" in item.value for item in app.caption)
+    assert not any(button.label == "安装更新并重启" for button in app.button)
+    atomic_json(settings.data_dir / "updates/installing.json", {})
+    app.run()
+    assert not app.exception
+    assert any("操作已暂停" in item.value for item in app.info)
+    assert not app.sidebar.radio

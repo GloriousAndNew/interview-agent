@@ -13,7 +13,7 @@ from .config import Settings
 from .db import BudgetExceeded, LostLease, Store, uid
 from .diagnostics import describe_validation, repair_instructions, save_response
 from .files import DataPathError, atomic_json, inside, read_json
-from .media import AudioProcessingError, prepare, probe
+from .media import AudioProcessingError, UPLOAD_BITRATE_KBPS, UPLOAD_SAMPLE_RATE, prepare, probe
 from .providers import AliASR, DeepSeek, OSSStorage, OutputTruncated, ProviderError, normalize_asr
 from .schemas import Extraction, Transcript, review_extraction
 from .services import chunk_transcript, export_revision, purge_deleted
@@ -24,7 +24,7 @@ def job_settings(settings: Settings, snapshot: dict, checkpoint: dict | None = N
     current_fields = {"monthly_budget_cny", "audio_reserve_per_hour", "llm_reserve_per_chunk"}
     # Storage setup can be repaired until an object has been uploaded. Existing
     # remote objects must retain their original storage location on resume.
-    has_remote_object = any(t.get("uploaded") or t.get("remote_task_id") for t in (checkpoint or {}).get("tracks", []))
+    has_remote_object = any(t.get("uploaded") or t.get("remote_task_id") or t.get("upload_state") for t in (checkpoint or {}).get("tracks", []))
     if not has_remote_object:
         current_fields |= {"oss_bucket", "oss_endpoint"}
     result = replace(settings, **{k: v for k, v in snapshot.items() if k in Settings.public_fields() and k not in current_fields})
@@ -129,11 +129,13 @@ class Pipeline:
             tracks = []
             for n in range(2 if separate else 1):
                 self.store.check(job)
-                path = directory / f"audio-{n}.wav"
+                path = directory / f"audio-{n}.mp3"
                 prepare(source, path, n if separate else None)
-                tracks.append({"path": str(path.relative_to(settings.data_dir)), "channel": n if separate else None, "object_key": f"interview-agent/{job['id']}/{n}.wav"})
-            cp.update(tracks=tracks, duration_ms=info["duration_ms"])
+                tracks.append({"path": str(path.relative_to(settings.data_dir)), "channel": n if separate else None, "object_key": f"interview-agent/{job['id']}/{n}.mp3"})
+            upload_audio = {"format": "mp3", "bitrate_kbps": UPLOAD_BITRATE_KBPS, "sample_rate": UPLOAD_SAMPLE_RATE, "channels_per_track": 1, "track_count": len(tracks), "source_bytes": media["size"], "prepared_bytes": sum(inside(settings.data_dir, t["path"]).stat().st_size for t in tracks)}
+            cp.update(tracks=tracks, duration_ms=info["duration_ms"], upload_audio=upload_audio)
             self.store.checkpoint(job)
+            self.store.event(job, "UPLOAD_COPY_PREPARED", "已生成压缩上传副本，原始录音保持不变。", details=upload_audio)
         storage, asr = self.storage_factory(settings), self.asr_factory(settings)
         try:
             for n, track in enumerate(cp["tracks"]):
@@ -143,15 +145,31 @@ class Pipeline:
                 if not track.get("remote_task_id"):
                     if not track.get("uploaded"):
                         self.store.checkpoint(job, "ASR_UPLOADING")
-                        # Keep a cleanup record for every upload attempt, even
-                        # if an earlier interrupted upload used another bucket.
-                        track["object_key"] = f"interview-agent/{job['id']}/{n}-{uid()}.wav"
+                        suffix = Path(track["path"]).suffix.lower()
+                        if not track.get("upload_state"):
+                            track["object_key"] = f"interview-agent/{job['id']}/{n}-{uid()}{suffix}"
+                            track["upload_state"] = {"status": "pending"}
+                        job["config"].update(oss_bucket=settings.oss_bucket, oss_endpoint=settings.oss_endpoint)
+                        # Freeze storage identity before initiating any multipart session.
+                        with self.store.transaction() as con:
+                            self.store.guard(con, job)
+                            con.execute("UPDATE jobs SET config=? WHERE id=?", (json.dumps(job["config"]), job["id"]))
                         self.store.checkpoint(job)
                         with self.store.transaction() as con:
                             self.store.guard(con, job)
                             con.execute("INSERT OR IGNORE INTO cleanup(id,job_id,object_key,config,eligible) VALUES (?,?,?,?,?)", (uid(), job["id"], track["object_key"], json.dumps({"oss_bucket": settings.oss_bucket, "oss_endpoint": settings.oss_endpoint}), time.time() + 49 * 3600))
-                        storage.upload(track["object_key"], inside(settings.data_dir, track["path"]))
+                        def save_upload(state):
+                            track["upload_state"] = state
+                            config = {"oss_bucket": settings.oss_bucket, "oss_endpoint": settings.oss_endpoint, "upload_id": state.get("upload_id")}
+                            with self.store.transaction() as con:
+                                self.store.guard(con, job, allow_cancel=True)
+                                con.execute("UPDATE jobs SET checkpoint=?,updated=? WHERE id=?", (json.dumps(cp), time.time(), job["id"]))
+                                con.execute("UPDATE cleanup SET config=?,status='pending',eligible=? WHERE object_key=?", (json.dumps(config), time.time() + 49 * 3600, track["object_key"]))
+                        self.store.event(job, "UPLOAD_STARTED", "开始上传或核对已完成分片。")
+                        storage.upload(track["object_key"], inside(settings.data_dir, track["path"]), state=track["upload_state"], save=save_upload, check=lambda: self.store.check(job))
                         track["uploaded"] = True
+                        from .uploads import upload_summary
+                        self.store.event(job, "UPLOAD_COMPLETED", "上传完成；测速与分片恢复记录已保存。", details=upload_summary(track) or {})
                         job["config"]["oss_bucket"] = settings.oss_bucket
                         job["config"]["oss_endpoint"] = settings.oss_endpoint
                         with self.store.transaction() as con:
@@ -390,9 +408,15 @@ class Pipeline:
     def maintenance(self):
         for row in self.store.rows("SELECT * FROM cleanup WHERE status='pending' AND eligible<=? AND attempts<12", (time.time(),)):
             try:
-                settings = replace(self.settings, **json.loads(row["config"]))
+                if row["job_id"] and self.store.one("SELECT id FROM jobs WHERE id=? AND status IN ('RUNNING','QUEUED','RETRY_WAIT')", (row["job_id"],)):
+                    continue
+                config = json.loads(row["config"])
+                settings = replace(self.settings, **{k: v for k, v in config.items() if k in ("oss_bucket", "oss_endpoint")})
                 settings.validate()
-                self.storage_factory(settings).delete(row["object_key"])
+                storage = self.storage_factory(settings)
+                if config.get("upload_id"):
+                    storage.abort(row["object_key"], config["upload_id"])
+                storage.delete(row["object_key"])
                 with self.store.transaction() as con:
                     con.execute("UPDATE cleanup SET status='done',error='' WHERE id=?", (row["id"],))
             except Exception:

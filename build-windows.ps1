@@ -9,7 +9,9 @@ if (-not $SkipTests) {
 }
 & $taskPython -m PyInstaller --noconfirm --distpath (Join-Path $taskRoot 'dist') --workpath (Join-Path $taskRoot 'build') (Join-Path $taskRoot 'interview-agent.spec')
 if ($LASTEXITCODE -ne 0) { throw 'Executable build failed.' }
+& $taskPython -m PyInstaller --noconfirm --distpath (Join-Path $taskRoot 'dist') --workpath (Join-Path $taskRoot 'build') (Join-Path $taskRoot 'updater.spec')
+if ($LASTEXITCODE -ne 0) { throw 'Updater build failed.' }
 Copy-Item -LiteralPath (Join-Path $taskRoot 'docs/windows-exe.md') -Destination (Join-Path $taskRoot 'dist/interview-agent/使用说明.md')
 & $taskPython (Join-Path $taskRoot 'tools/package_windows.py')
 if ($LASTEXITCODE -ne 0) { throw 'Archive packaging failed.' }
-Write-Output 'Build ready: dist/interview-agent/interview-agent.exe. Keep the complete folder together.'
+Write-Output 'Build ready: dist/interview-agent/interview-agent.exe and dist/interview-agent-v*-windows-x64.zip. Keep the complete folder together.'

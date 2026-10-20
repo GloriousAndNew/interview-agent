@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from .files import atomic_json
 from .schemas import ExtractionValidationError
+from .uploads import upload_summary
 
 
 def describe_validation(exc: ValueError) -> dict:
@@ -45,5 +46,7 @@ def report(store, job_id: str) -> dict:
         "progress": {"completed_chunks": len(checkpoint.get("chunks", [])), "total_chunks": len(checkpoint.get("chunk_plan", [])), "has_transcript": bool(checkpoint.get("transcript")), "last_diagnostic": checkpoint.get("last_diagnostic")},
         "events": store.events(job_id, limit=100),
         "calls": calls,
+        "upload_audio": checkpoint.get("upload_audio"),
+        "uploads": [summary for track in checkpoint.get("tracks", []) if (summary := upload_summary(track))],
         "privacy": "此报告不包含密钥、音频地址、完整转写或模型回答正文；失败响应仅保存在本地 attempts 目录。",
     }

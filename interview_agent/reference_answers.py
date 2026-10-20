@@ -42,6 +42,8 @@ def answer_state(store, revision_id: str, qa_id: str) -> tuple[dict | None, dict
 def reserve(store, revision_id: str, qa_id: str, settings) -> str:
     now, generation_id = time.time(), uid()
     with store.transaction() as con:
+        if (store.root / "updates/installing.json").exists():
+            raise AnswerBusy("正在安装更新，请在重启后生成高分答案。")
         source = con.execute("SELECT 1 FROM qa q JOIN revisions r ON r.id=q.revision_id JOIN interviews i ON i.id=r.interview_id WHERE q.id=? AND q.revision_id=? AND i.deleted=0 AND i.active_revision=?", (qa_id, revision_id, revision_id)).fetchone()
         if not source:
             raise ValueError("问答版本已变更或已删除，请刷新后生成。")
