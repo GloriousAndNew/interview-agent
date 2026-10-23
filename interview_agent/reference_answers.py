@@ -24,6 +24,8 @@ class HighScoreAnswer(StrictModel):
     improvements: list[Point] = Field(default_factory=list, max_length=6)
     followup_questions: list[Point] = Field(default_factory=list, max_length=5)
     needs_personalization: list[Point] = Field(default_factory=list, max_length=6)
+    citation_ids: list[str] = Field(default_factory=list, max_length=8)
+    conflicts: list[Point] = Field(default_factory=list, max_length=6)
 
 
 class AnswerBusy(ValueError):
@@ -76,6 +78,10 @@ def context(store, revision_id: str, qa_id: str) -> dict:
 
 def generate(settings, store, revision_id: str, qa_id: str, *, provider_factory=DeepSeek) -> dict:
     source = context(store, revision_id, qa_id)
+    from .personal import answer_context
+    personal_context = answer_context(store, source['question'], source.get('original_answer'), source['position'])
+    if personal_context is not None:
+        source['personal_context'] = personal_context
     provider = provider_factory(settings)
     generation_id = None
     try:
@@ -83,11 +89,17 @@ def generate(settings, store, revision_id: str, qa_id: str, *, provider_factory=
         result, usage, request_id = provider.high_score(source)
         result = HighScoreAnswer.model_validate(result)
         store.record_call(generation_id, "received", usage, request_id)
+        evidence = {r['id']: r for r in (personal_context or {}).get('evidence', [])}
+        if any(cid not in evidence for cid in result.citation_ids):
+            raise ProviderError("答案引用了未提供的资料片段，请重新生成。")
+        content = result.model_dump()
+        if personal_context is not None:
+            content['personal_context'] = personal_context
         with store.transaction() as con:
             exists = con.execute("SELECT 1 FROM reference_answers a JOIN revisions r ON r.id=a.revision_id JOIN interviews i ON i.id=r.interview_id WHERE a.id=? AND a.status='RUNNING' AND a.lease_until>? AND i.deleted=0", (generation_id, time.time())).fetchone()
             if not exists:
                 raise ValueError("生成请求已过期或面试已删除，未保存此结果。")
-            con.execute("UPDATE reference_answers SET status='SUCCEEDED',content=?,updated=?,lease_until=0 WHERE id=?", (result.model_dump_json(), time.time(), generation_id))
+            con.execute("UPDATE reference_answers SET status='SUCCEEDED',content=?,updated=?,lease_until=0 WHERE id=?", (json.dumps(content, ensure_ascii=False), time.time(), generation_id))
             con.execute("UPDATE revisions SET export_status='pending' WHERE id=?", (revision_id,))
         from .services import export_revision
         try:
@@ -95,7 +107,7 @@ def generate(settings, store, revision_id: str, qa_id: str, *, provider_factory=
         except (OSError, ValueError):
             # The answer is saved; exporting can be retried independently.
             pass
-        return result.model_dump()
+        return content
     except Exception as exc:
         if generation_id:
             safe = str(exc) if isinstance(exc, (ProviderError, BudgetExceeded)) else "高分答案生成或保存失败，请稍后重试；已有答案保留。"
@@ -109,9 +121,15 @@ def generate(settings, store, revision_id: str, qa_id: str, *, provider_factory=
 
 def content_markdown(content: dict) -> str:
     lines = ["> AI 生成的练习参考，不是面试原答，也不保证获得高分；个人经历请按真实情况补充。", "", content["answer"]]
-    for key, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充")):
+    for key, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充"), ("conflicts", "资料冲突，需确认")):
         if content.get(key):
             lines += ["", "### " + label, ""] + ["- " + item for item in content[key]]
+    personal = content.get('personal_context')
+    if personal is not None:
+        lines += ['', '### 个人资料参考快照', '', f"目标岗位：{personal['position']}；{personal['length']}"]
+        cited = set(content.get('citation_ids', []))
+        for item in personal['evidence']:
+            lines += ['', f"#### {item['filename']} · 版本 {item['document_id'][:8]} · 片段 {item['ordinal']}" + ('（模型引用）' if item['id'] in cited else '（检索候选）'), '', item['text']]
     return "\n".join(lines) + "\n"
 
 

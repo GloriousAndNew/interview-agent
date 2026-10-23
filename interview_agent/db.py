@@ -79,6 +79,16 @@ class Store:
                     created REAL NOT NULL, updated REAL NOT NULL, lease_until REAL NOT NULL,
                     FOREIGN KEY(qa_id,revision_id) REFERENCES qa(id,revision_id) ON DELETE CASCADE);
                 CREATE INDEX IF NOT EXISTS reference_question ON reference_answers(revision_id,qa_id,created);
+                CREATE TABLE IF NOT EXISTS personal_documents (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, filename TEXT NOT NULL,
+                    sha256 TEXT NOT NULL, original BLOB NOT NULL, text TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS personal_chunks (
+                    id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES personal_documents(id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL, text TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS personal_chunks_document ON personal_chunks(document_id);
+                CREATE TABLE IF NOT EXISTS personal_profile (
+                    id INTEGER PRIMARY KEY CHECK(id=1), content TEXT NOT NULL);
             """)
             con.execute("BEGIN IMMEDIATE")
             columns = {r[1] for r in con.execute("PRAGMA table_info(jobs)")}

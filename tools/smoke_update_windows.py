@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from desktop import healthy
 from interview_agent.db import Store, uid
 from interview_agent import __version__
+from interview_agent.personal import add_document, save_profile, LENGTHS
+from io import BytesIO
 from interview_agent.files import atomic_json, read_json
 from interview_agent.update_bundle import MANIFEST, extract_bundle, safe_name, sha256
 
@@ -52,6 +54,8 @@ def main():
     app = root / "interview-agent"
     staged = extract_bundle(args.new, data / f"updates/v{__version__}/staged", __version__)
     store = Store(data)
+    personal_id = add_document(store, BytesIO("虚构验证资料：订单幂等项目".encode()), "验证简历.txt", "简历")
+    save_profile(store, enabled=False, position="验证岗位", job_description="", length=LENGTHS[0])
     interview, job = store.create("更新保留样本", {}, {}, {})
     with store.transaction() as con:
         con.execute("UPDATE jobs SET status='FAILED' WHERE id=?", (job,))
@@ -86,6 +90,8 @@ def main():
         with closing(sqlite3.connect(data / "app.db")) as con:
             assert con.execute("SELECT title FROM interviews WHERE id=?", (interview,)).fetchone()[0] == "更新保留样本"
             assert con.execute("SELECT status FROM jobs WHERE id=?", (job,)).fetchone()[0] == "FAILED"
+            assert con.execute("SELECT text FROM personal_documents WHERE id=?", (personal_id,)).fetchone()[0] == "虚构验证资料：订单幂等项目"
+            assert json.loads(con.execute("SELECT content FROM personal_profile").fetchone()[0])["position"] == "验证岗位"
         assert (data / "updates/database-before-update.db").exists()
         assert (Path(state["backup_dir"]) / "interview-agent.exe").exists()
         report.update(status="ok", old_version=old_version, new_version=__version__, database_preserved=True, backup=True,

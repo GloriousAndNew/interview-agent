@@ -232,11 +232,22 @@ def high_score_panel(settings, store, revision_id, qa_id, question, original, lo
         if saved:
             content = saved["content"]
             st.markdown(content["answer"])
-            for name, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充")):
+            for name, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充"), ("conflicts", "资料冲突，需确认")):
                 if content.get(name):
                     st.markdown("**" + label + "**")
                     for value in content[name]:
                         st.markdown("- " + value)
+            personal = content.get("personal_context")
+            if personal is not None:
+                st.caption(f"个性化答案 · {personal['position']} · {personal['length']} · 使用生成时的资料快照")
+                with st.expander("查看个人资料参考依据"):
+                    cited = set(content.get("citation_ids", []))
+                    if not personal["evidence"]:
+                        st.info("未检索到可用个人资料，个人经历需补充。")
+                    for item in personal["evidence"]:
+                        st.text(f"{item['filename']} · 版本 {item['document_id'][:8]} · 片段 {item['ordinal']} · {'模型引用' if item['id'] in cited else '检索候选'}")
+                        st.caption(item["id"])
+                        st.text(item["text"])
             st.caption(f"生成于 {local_time(saved['created'])} · {saved['model']}")
             st.download_button("下载高分答案 Markdown", reference_markdown(question, original, content), file_name=f"high-score-{qa_id[:12]}.md", mime="text/markdown", key="reference-download-" + key)
         else:
@@ -250,6 +261,9 @@ def high_score_panel(settings, store, revision_id, qa_id, question, original, lo
             if st.button("刷新答案状态", key="reference-refresh-" + key):
                 st.rerun()
         st.caption(f"每次生成会调用一次 DeepSeek，按设置预留 ¥{settings.llm_reserve_per_chunk:.2f}，计入月预算；这不是实际账单。")
+        from interview_agent.personal import profile
+        prefs = profile(store)
+        st.caption("已启用个人资料检索，将结合简历、讲稿及目标岗位生成。" if prefs["enabled"] else "可在「个人信息」上传简历、讲稿并启用个性化生成。")
         if st.button("重新生成高分答案" if saved else "生成高分答案", key="reference-generate-" + key, disabled=busy, type="secondary"):
             try:
                 with st.spinner("正在生成面试高分答案，请稍候…"):
@@ -536,7 +550,7 @@ def main():
         st.stop()
     with st.sidebar:
         st.markdown('<div class="sidebar-brand"><span class="brand-icon">面</span><div><strong>面试知识库</strong><small>记录 · 整理 · 复盘</small></div></div>', unsafe_allow_html=True)
-        navigation = st.radio("导航", ["导入面试", "处理任务", "问答知识库", "面试详情", "设置与数据"], key="navigation", label_visibility="collapsed")
+        navigation = st.radio("导航", ["导入面试", "处理任务", "问答知识库", "个人信息", "面试详情", "设置与数据"], key="navigation", label_visibility="collapsed")
         st.divider()
         st.caption(f"v{__version__} · 本地应用 · 云端模型")
         st.markdown('<div class="sidebar-note">把每一次面试，变成下一次的准备。</div>', unsafe_allow_html=True)
@@ -550,7 +564,8 @@ def main():
         st.markdown(f'<div class="worker-status"><span class="status-dot {"online" if alive else ""}"></span>{"后台已连接" if alive else "后台未连接"}</div>', unsafe_allow_html=True)
         if not alive:
             st.caption("请使用 start.ps1 启动后台")
-    {"导入面试": lambda: home(settings, store), "处理任务": lambda: tasks(store), "问答知识库": lambda: library(settings, store), "面试详情": lambda: details(settings, store), "设置与数据": lambda: settings_page(settings, store)}[navigation]()
+    from interview_agent.personal_ui import personal_page
+    {"导入面试": lambda: home(settings, store), "处理任务": lambda: tasks(store), "问答知识库": lambda: library(settings, store), "个人信息": lambda: personal_page(settings, store), "面试详情": lambda: details(settings, store), "设置与数据": lambda: settings_page(settings, store)}[navigation]()
 
 
 if __name__ == "__main__":

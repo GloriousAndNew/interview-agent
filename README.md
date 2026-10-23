@@ -6,7 +6,9 @@ Windows 本地应用，使用阿里云 ASR 转写录音、DeepSeek Flash 整理�
 
 [下载最新 Windows x64 程序包](https://github.com/GloriousAndNew/interview-agent/releases/latest)。解压完整目录后双击 `interview-agent.exe`，无需安装 Python。请保留 `_internal` 文件夹，并配置云端模型环境变量。
 
-升级时先退出旧程序、备份数据目录，再解压新版到新文件夹，沿用原数据目录。当前通过发布页手动下载更新，尚未包含自动检查更新功能。详见 [EXE 使用与升级说明](docs/windows-exe.md)。
+v0.1.5 新增「个人信息」：上传简历与面试讲稿，配置目标岗位，通过本地检索生成有资料依据的高分答案。详见 [个人信息使用说明](docs/personal-information.md)。
+
+v0.1.3 及以上可在「设置与数据 → 程序更新」检查、下载并确认安装新版，也可退出后解压完整新版，沿用原数据目录。详见 [EXE 使用与升级说明](docs/windows-exe.md)。
 
 ## 源码启动
 

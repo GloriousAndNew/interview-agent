@@ -9,13 +9,15 @@ from zipfile import ZipFile
 import httpx
 import pytest
 
-from interview_agent import updates
+from interview_agent import updates, __version__
 from interview_agent.files import atomic_json, read_json
 from interview_agent.update_bundle import MANIFEST, UpdateError, extract_bundle, sha256, version, verify_folder, write_manifest
 from interview_agent.update_install import install, paths, recover, validate_plan
 
+FUTURE = ".".join(str(int(part) + (index == 2)) for index, part in enumerate(__version__.split(".")))
 
-def bundle(folder, release="0.1.5"):
+
+def bundle(folder, release=FUTURE):
     folder.mkdir(parents=True)
     (folder / "_internal").mkdir()
     (folder / "interview-agent.exe").write_bytes(b"new-exe")
@@ -36,7 +38,7 @@ def archive_bytes(folder):
 
 def release_payload(content):
     import hashlib
-    return {"tag_name": "v0.1.5", "draft": False, "prerelease": False, "body": "New version", "assets": [{"name": "interview-agent-v0.1.5-windows-x64.zip", "state": "uploaded", "size": len(content), "digest": "sha256:" + hashlib.sha256(content).hexdigest(), "browser_download_url": "https://github.com/GloriousAndNew/interview-agent/releases/download/v0.1.5/interview-agent-v0.1.5-windows-x64.zip"}]}
+    return {"tag_name": f"v{FUTURE}", "draft": False, "prerelease": False, "body": "New version", "assets": [{"name": f"interview-agent-v{FUTURE}-windows-x64.zip", "state": "uploaded", "size": len(content), "digest": "sha256:" + hashlib.sha256(content).hexdigest(), "browser_download_url": f"https://github.com/GloriousAndNew/interview-agent/releases/download/v{FUTURE}/interview-agent-v{FUTURE}-windows-x64.zip"}]}
 
 
 def test_versions_and_old_remote_ignored():
@@ -60,7 +62,7 @@ def test_download_verified_bundle(tmp_path):
     updates.download(data, client=client)
     state = updates.read_state(data)
     assert state["phase"] == "ready", state
-    verify_folder(data / "updates/v0.1.5/staged/interview-agent", "0.1.5", state["manifest_hash"])
+    verify_folder(data / f"updates/v{FUTURE}/staged/interview-agent", FUTURE, state["manifest_hash"])
 
 
 def test_wrong_checksum_and_redirect_rejected(tmp_path):
@@ -79,21 +81,21 @@ def test_malicious_archive_names(tmp_path, name):
     with ZipFile(archive, "w") as zipped:
         zipped.writestr(name, b"malicious")
     with pytest.raises(UpdateError):
-        extract_bundle(archive, tmp_path / "stage", "0.1.5")
+        extract_bundle(archive, tmp_path / "stage", FUTURE)
     assert not (tmp_path / "stage").exists()
 
 
 def test_manifest_hash_extra_file_and_wrong_version(tmp_path):
     target = bundle(tmp_path / "bundle")
     with pytest.raises(UpdateError):
-        verify_folder(target, "0.1.6")
+        verify_folder(target, "999.0.0")
     (target / "surprise.exe").write_bytes(b"x")
     with pytest.raises(UpdateError):
-        verify_folder(target, "0.1.5")
+        verify_folder(target, FUTURE)
     (target / "surprise.exe").unlink()
     (target / "interview-agent.exe").write_bytes(b"tampered")
     with pytest.raises(UpdateError):
-        verify_folder(target, "0.1.5")
+        verify_folder(target, FUTURE)
 
 
 @pytest.fixture
@@ -103,8 +105,8 @@ def plan(tmp_path):
     install_dir = tmp_path / "application"
     bundle(install_dir, "0.1.3")
     (install_dir / "interview-agent.exe").write_bytes(b"old-exe")
-    staged = bundle(data / "updates/v0.1.5/staged/interview-agent")
-    value = {"token": "a" * 32, "data_dir": str(data), "install_dir": str(install_dir), "staged_dir": str(staged), "version": "0.1.5", "old_version": "0.1.3", "port": 8547, "parent_pid": 0, "manifest_hash": sha256(staged / MANIFEST)}
+    staged = bundle(data / f"updates/v{FUTURE}/staged/interview-agent")
+    value = {"token": "a" * 32, "data_dir": str(data), "install_dir": str(install_dir), "staged_dir": str(staged), "version": FUTURE, "old_version": "0.1.3", "port": 8547, "parent_pid": 0, "manifest_hash": sha256(staged / MANIFEST)}
     path = data / "updates/install-plan.json"
     atomic_json(path, value)
     atomic_json(data / "updates/installing.json", {"token": value["token"]})
@@ -196,8 +198,8 @@ def test_busy_launcher_waits_before_install_and_starts_independent_helper(settin
     import desktop
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     instance = {"instance_token": "test-instance", "port": 8547}
-    updates.status(settings.data_dir, phase="waiting", version="0.1.5", manifest_hash="pending")
-    atomic_json(settings.data_dir / "updates/install-request.json", {"version": "0.1.5", "instance_token": instance["instance_token"]})
+    updates.status(settings.data_dir, phase="waiting", version=FUTURE, manifest_hash="pending")
+    atomic_json(settings.data_dir / "updates/install-request.json", {"version": FUTURE, "instance_token": instance["instance_token"]})
     calls = []
     monkeypatch.setattr(desktop.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
     assert not desktop.prepare_update(settings, instance, headless=True, no_browser=True)
@@ -205,8 +207,8 @@ def test_busy_launcher_waits_before_install_and_starts_independent_helper(settin
     with store.transaction() as con:
         con.execute("UPDATE jobs SET status='COMPLETED'")
     app = bundle(tmp_path.parent / (tmp_path.name + "-installed"), "0.1.3")
-    staged = bundle(settings.data_dir / "updates/v0.1.5/staged/interview-agent")
-    updates.status(settings.data_dir, phase="waiting", version="0.1.5", manifest_hash=sha256(staged / MANIFEST))
+    staged = bundle(settings.data_dir / f"updates/v{FUTURE}/staged/interview-agent")
+    updates.status(settings.data_dir, phase="waiting", version=FUTURE, manifest_hash=sha256(staged / MANIFEST))
     monkeypatch.setattr(sys, "executable", str(app / "interview-agent.exe"))
     assert desktop.prepare_update(settings, instance, headless=True, no_browser=True), updates.read_state(settings.data_dir)
     assert len(calls) == 1

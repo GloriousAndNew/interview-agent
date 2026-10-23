@@ -17,6 +17,7 @@ def main():
         raise SystemExit("Build the application folder first.")
     (folder / "使用说明.md").write_bytes((root / "docs/windows-exe.md").read_bytes())
     (folder / "automatic-updates.md").write_bytes((root / "docs/automatic-updates.md").read_bytes())
+    (folder / "personal-information.md").write_bytes((root / "docs/personal-information.md").read_bytes())
     version = run_path(str(root / "interview_agent/__init__.py"))["__version__"]
     shutil.copy2(root / "dist/interview-agent-updater.exe", folder / "interview-agent-updater.exe")
     write_manifest(folder, version)
