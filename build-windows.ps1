@@ -4,7 +4,7 @@ $taskRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $taskPython = Join-Path $taskRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $taskPython)) { throw 'Create .venv and install project dependencies first.' }
 if (-not $SkipTests) {
-    & $taskPython -m pytest -q $taskRoot
+    & $taskPython -m pytest -q (Join-Path $taskRoot 'tests')
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed; build stopped.' }
 }
 & $taskPython -m PyInstaller --noconfirm --distpath (Join-Path $taskRoot 'dist') --workpath (Join-Path $taskRoot 'build') (Join-Path $taskRoot 'interview-agent.spec')

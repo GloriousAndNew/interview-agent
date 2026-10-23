@@ -19,7 +19,7 @@ from interview_agent.schemas import Transcript
 from interview_agent.providers import ProviderError, validate_key
 from interview_agent.progress import duration, local_time, task_progress
 from interview_agent.services import export_revision, request_delete, submit, timestamp
-from interview_agent.ui import apply_style, navigate, page_heading, tags, task_heading, section_label, connection_cards, empty_state, recent_heading
+from interview_agent.ui import apply_style, navigate, page_heading, tags, task_heading, section_label, connection_cards, empty_state, recent_heading, page_rows
 from interview_agent.reference_answers import answer_state, generate as generate_reference, markdown as reference_markdown
 from interview_agent.uploads import upload_summary
 from interview_agent.upload_test import test_upload
@@ -34,15 +34,12 @@ def context():
 
 
 def home(settings, store):
-    page_heading("每一场面试，都有迹可循", "上传录音，留下清晰的问答与原始依据。", "导入面试")
-    columns = st.columns(3)
-    columns[0].metric("已导入面试", store.one("SELECT COUNT(*) n FROM interviews WHERE deleted=0")["n"])
-    columns[1].metric("已整理问答", store.one("SELECT COUNT(*) n FROM qa q JOIN interviews i ON i.active_revision=q.revision_id WHERE i.deleted=0")["n"])
-    columns[2].metric("待处理任务", store.one("SELECT COUNT(*) n FROM jobs j JOIN interviews i ON i.id=j.interview_id WHERE i.deleted=0 AND j.status IN ('QUEUED','RUNNING','RETRY_WAIT')")["n"])
-    st.markdown('<div class="workflow"><div class="workflow-step"><b>01 · 导入面试</b><small>录音与问答文档</small></div><div class="workflow-step"><b>02 · 自动整理</b><small>转写与来源校验</small></div><div class="workflow-step"><b>03 · 沉淀知识</b><small>搜索、回听、复盘</small></div></div>', unsafe_allow_html=True)
-    import_column, guide_column = st.columns([2.15, 1], gap="large")
-    with import_column, st.form("upload", clear_on_submit=False):
-        section_label("01", "导入新面试", "上传录音或问答文档，开始一次新的复盘。")
+    page_heading("导入面试", "上传录音或问答文档，自动整理到知识库。", "导入面试")
+    interviews = store.one("SELECT COUNT(*) n FROM interviews WHERE deleted=0")["n"]
+    questions = store.one("SELECT COUNT(*) n FROM qa q JOIN interviews i ON i.active_revision=q.revision_id WHERE i.deleted=0")["n"]
+    pending = store.one("SELECT COUNT(*) n FROM jobs j JOIN interviews i ON i.id=j.interview_id WHERE i.deleted=0 AND j.status IN ('QUEUED','RUNNING','RETRY_WAIT')")["n"]
+    st.caption(f"{interviews} 场面试 · {questions} 条问答 · {pending} 个待处理任务")
+    with st.form("upload", clear_on_submit=False):
         upload = st.file_uploader("录音或面试问答文档", type=["mp3", "m4a", "wav", "docx", "md", "txt", "json"], max_upload_size=settings.max_upload_mb, help="文档最多 10 MB。Word 读取正文和表格；Markdown/TXT 使用 UTF-8。旧版 DOC 请先另存为 DOCX。")
         title = st.text_input("面试标题", max_chars=200, placeholder="例如：后端开发 · 第一轮")
         a, b, c = st.columns(3)
@@ -52,20 +49,11 @@ def home(settings, store):
         with st.expander("录音高级选项"):
             mode = st.radio("双声道录音的处理方式", ["普通立体声：合并识别并区分说话人", "双方分别占一个声道：拆开识别"], help="拆开识别会分别计费。单声道录音不受此选项影响。")
             duplicate = st.checkbox("允许同一录音创建另一场面试")
-        st.caption("录音发送至阿里云转写；DOCX、Markdown、TXT、JSON 直接整理文字，不上传 OSS、不调用语音识别。文字发送至 DeepSeek，结果保存在本机。")
+        st.caption("录音由阿里云转写，文字由 DeepSeek 整理，结果保存在本机。问答文档跳过语音转写。")
         with st.expander("如何准备问答文档"):
             st.write("可按「问题：…… / 回答：……」逐条编写，也可在 Word 中使用问题、回答两列表格。无需固定模板。")
             st.caption("Word 读取正文段落与表格，保留原文件；图片文字、批注、页眉页脚不参与整理。文档不生成录音时间戳或回听入口。")
         clicked = st.form_submit_button("开始整理", type="primary")
-    with guide_column:
-        with st.container(border=True, key="import-guide"):
-            section_label("指南", "选择适合的导入方式")
-            st.markdown('<div class="guide-item"><span>音频录音</span><b>让对话自动变成问答</b><p>支持 MP3、M4A、WAV。压缩上传副本，原始录音保留，支持回听。</p></div><div class="guide-item"><span>问答文档</span><b>已有文字，也能直接整理</b><p>支持 DOCX、Markdown、TXT、JSON。跳过语音转写，直接整理入库。</p></div>', unsafe_allow_html=True)
-            st.caption("文件大小、录音时长和预算可在设置页调整。")
-        with st.container(border=True, key="privacy-note"):
-            st.markdown("**你的面试资料，保存在本机**")
-            st.caption("录音由阿里云转写，文字由云端模型整理。原文件、问答和修改记录保存在本地知识库。")
-            st.button("查看处理任务", on_click=navigate, args=("处理任务",), width="stretch")
     if clicked:
         if not upload:
             st.warning("请先选择一个文件。")
@@ -129,7 +117,7 @@ def tasks(store):
     now = time.time()
     if not rows:
         st.info("没有符合条件的任务。可切换状态或调整搜索词。" if any(counts.values()) else "还没有任务，先导入一场面试。")
-    for row in rows:
+    for row in page_rows(rows, "task-page"):
         with st.container(border=True, key="task-card-" + row["id"]):
             task_heading(row["title"], row["status"], STATUS.get(row["status"], row["status"]))
             st.caption(STAGE.get(row["stage"], row["stage"]))
@@ -226,17 +214,18 @@ def tasks(store):
 def high_score_panel(settings, store, revision_id, qa_id, question, original, location):
     key = f"{location}-{revision_id}-{qa_id}"
     with st.expander("面试高分答案", expanded=False):
-        st.caption("AI 生成的练习参考，与面试原答独立保存，不保证获得高分。涉及个人经历、项目与指标时请按真实情况补充。")
+        st.caption("AI 练习参考 · 与面试原答独立保存 · 个人事实请核对")
         saved, latest = answer_state(store, revision_id, qa_id)
         busy = bool(latest and latest["status"] == "RUNNING" and latest["lease_until"] > time.time())
         if saved:
             content = saved["content"]
             st.markdown(content["answer"])
-            for name, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充"), ("conflicts", "资料冲突，需确认")):
-                if content.get(name):
-                    st.markdown("**" + label + "**")
-                    for value in content[name]:
-                        st.markdown("- " + value)
+            with st.expander("得分要点与练习建议"):
+                for name, label in (("key_points", "得分要点"), ("improvements", "原答改进建议"), ("followup_questions", "可能的追问"), ("needs_personalization", "需要按个人情况补充"), ("conflicts", "资料冲突，需确认")):
+                    if content.get(name):
+                        st.markdown("**" + label + "**")
+                        for value in content[name]:
+                            st.markdown("- " + value)
             personal = content.get("personal_context")
             if personal is not None:
                 st.caption(f"个性化答案 · {personal['position']} · {personal['length']} · 使用生成时的资料快照")
@@ -244,9 +233,12 @@ def high_score_panel(settings, store, revision_id, qa_id, question, original, lo
                     cited = set(content.get("citation_ids", []))
                     if not personal["evidence"]:
                         st.info("未检索到可用个人资料，个人经历需补充。")
-                    for item in personal["evidence"]:
-                        st.text(f"{item['filename']} · 版本 {item['document_id'][:8]} · 片段 {item['ordinal']} · {'模型引用' if item['id'] in cited else '检索候选'}")
-                        st.caption(item["id"])
+                    evidence = personal["evidence"]
+                    if evidence:
+                        lookup = {item["id"]: item for item in evidence}
+                        evidence_id = st.selectbox("选择参考片段", list(lookup), format_func=lambda cid: f"{lookup[cid]['filename']} · 片段 {lookup[cid]['ordinal']} · {'模型引用' if cid in cited else '检索候选'}", key="evidence-" + key)
+                        item = lookup[evidence_id]
+                        st.text(f"{'模型引用' if evidence_id in cited else '检索候选'} · 版本 {item['document_id'][:8]}")
                         st.text(item["text"])
             st.caption(f"生成于 {local_time(saved['created'])} · {saved['model']}")
             st.download_button("下载高分答案 Markdown", reference_markdown(question, original, content), file_name=f"high-score-{qa_id[:12]}.md", mime="text/markdown", key="reference-download-" + key)
@@ -260,10 +252,9 @@ def high_score_panel(settings, store, revision_id, qa_id, question, original, lo
             st.info("正在生成，请稍候。完成后刷新页面查看；重复点击不会再次调用模型。")
             if st.button("刷新答案状态", key="reference-refresh-" + key):
                 st.rerun()
-        st.caption(f"每次生成会调用一次 DeepSeek，按设置预留 ¥{settings.llm_reserve_per_chunk:.2f}，计入月预算；这不是实际账单。")
         from interview_agent.personal import profile
         prefs = profile(store)
-        st.caption("已启用个人资料检索，将结合简历、讲稿及目标岗位生成。" if prefs["enabled"] else "可在「个人信息」上传简历、讲稿并启用个性化生成。")
+        st.caption(("结合个人资料生成" if prefs["enabled"] else "可到「个人信息」开启个性化") + f" · 每次预留 ¥{settings.llm_reserve_per_chunk:.2f}，非实际账单")
         if st.button("重新生成高分答案" if saved else "生成高分答案", key="reference-generate-" + key, disabled=busy, type="secondary"):
             try:
                 with st.spinner("正在生成面试高分答案，请稍候…"):
@@ -284,8 +275,9 @@ def library(settings, store):
     keyword = a.text_input("搜索问题、回答、主题或面试标题", placeholder="例如：Redis、项目难点")
     position = b.text_input("按岗位筛选")
     rows = store.search(keyword, position)
-    st.caption(f"找到 {len(rows)} 条问答 · 最多显示 100 条 · 支持搜索问题、原答、主题和面试标题")
-    for question_no, row in enumerate(rows, 1):
+    st.caption(f"找到 {len(rows)} 条问答" + (" · 最多检索 100 条，可添加关键词缩小范围" if len(rows) == 100 else ""))
+    visible = page_rows(rows, "knowledge-page")
+    for question_no, row in enumerate(visible, 1):
         with st.container(border=True, key="knowledge-" + row["revision_id"] + row["id"]):
             st.markdown(f'<div class="question-index">QUESTION {question_no:02d} · 面试问答</div>', unsafe_allow_html=True)
             st.subheader(row["question"])

@@ -162,3 +162,25 @@ def test_home_recent_interview_navigation_and_settings_groups(settings, store, s
     assert not app.exception
     assert {"模型与存储", "程序更新", "调用与备份"}.issubset({tab.label for tab in app.tabs})
     assert any(e.label == "预算与上传限制" for e in app.expander)
+
+
+def test_library_pages_and_search_reset(settings, store, submitted, monkeypatch):
+    Pipeline(settings, store, llm_factory=FakeLLM).run_once()
+    question = store.search()[0]
+    with store.transaction() as con:
+        for number in range(9):
+            con.execute("INSERT INTO qa VALUES (?,?,?,?,?,?)", (f"page-{number}", question["revision_id"], number + 1, f"分页示例 {number}", "示例回答", "测试"))
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    app.sidebar.radio[0].set_value("问答知识库").run()
+    assert not app.exception
+    assert len([b for b in app.button if b.label == "查看面试与原文"]) == 8
+    app.selectbox(key="knowledge-page").set_value(2).run()
+    assert len([b for b in app.button if b.label == "查看面试与原文"]) == 2
+    next(t for t in app.text_input if t.label == "搜索问题、回答、主题或面试标题").set_value("分页示例").run()
+    assert not app.exception
+    assert app.selectbox(key="knowledge-page").value == 1
+    app.selectbox(key="knowledge-page").set_value(2).run()
+    next(t for t in app.text_input if t.label == "搜索问题、回答、主题或面试标题").set_value("分页示例 1").run()
+    next(t for t in app.text_input if t.label == "搜索问题、回答、主题或面试标题").set_value("").run()
+    assert app.selectbox(key="knowledge-page").value == 1

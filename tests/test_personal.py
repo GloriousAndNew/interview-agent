@@ -117,7 +117,6 @@ def test_personal_ui_preferences_preview_activation_and_deletion(settings, store
     app = AppTest.from_file(APP, default_timeout=20).run()
     app.sidebar.radio[0].set_value("个人信息").run()
     assert not app.exception
-    app.checkbox(key="personal-preview-enabled-" + doc).check().run()
     assert any(t.label == "提取正文" and "Redis" in t.value for t in app.text_area)
     next(c for c in app.checkbox if c.label == "生成高分答案时使用个人资料").check()
     next(t for t in app.text_input if t.label == "目标岗位").set_value("Python 后端")
@@ -155,3 +154,19 @@ def test_library_personal_generation_displays_evidence(settings, store, submitte
     assert any(e.label == "查看个人资料参考依据" for e in app.expander)
     assert any("模型引用" in t.value for t in app.text)
     assert any("个性化答案" in t.value for t in app.caption)
+
+
+def test_personal_page_only_renders_selected_document(settings, store, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(settings.data_dir))
+    resume = add(store, "订单项目经历", "示例简历.txt")
+    script = add(store, "缓存一致性讲稿", "示例讲稿.txt", "面试讲稿")
+    app = AppTest.from_file(APP, default_timeout=20).run()
+    app.sidebar.radio[0].set_value("个人信息").run()
+    assert not app.exception
+    assert len([t for t in app.text_area if t.label == "提取正文"]) == 1
+    app.selectbox(key="personal-selected-document").set_value(resume).run()
+    assert next(t for t in app.text_area if t.label == "提取正文").value == "订单项目经历"
+    app.selectbox(key="personal-kind-filter").set_value("面试讲稿").run()
+    assert not app.exception
+    assert app.selectbox(key="personal-selected-document").value == script
+    assert next(t for t in app.text_area if t.label == "提取正文").value == "缓存一致性讲稿"

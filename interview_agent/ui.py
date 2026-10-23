@@ -11,7 +11,6 @@ def apply_style():
 
 
 def page_heading(title: str, description: str, section: str):
-    st.markdown(f'<div class="page-eyebrow">面试知识库 / {escape(section)}</div>', unsafe_allow_html=True)
     st.title(title)
     st.markdown(f'<p class="page-description">{escape(description)}</p>', unsafe_allow_html=True)
 
@@ -50,3 +49,18 @@ def empty_state(title: str, description: str):
 
 def recent_heading(title: str, metadata: str):
     st.markdown(f'<div class="recent-heading"><strong>{escape(title)}</strong><small>{escape(metadata)}</small></div>', unsafe_allow_html=True)
+
+
+def page_rows(rows: list[dict], key: str, size: int = 8) -> list[dict]:
+    """Bound visible cards, and reset the page when search results change."""
+    signature = tuple((r.get('revision_id', ''), r['id']) for r in rows)
+    if st.session_state.get(key + '-results') != signature:
+        st.session_state[key] = 1
+        st.session_state[key + '-results'] = signature
+    if len(rows) <= size:
+        return rows
+    pages = (len(rows) + size - 1) // size
+    page = st.selectbox("页码", list(range(1, pages + 1)), key=key, format_func=lambda n: f"第 {n} / {pages} 页")
+    start = (page - 1) * size
+    st.caption(f"显示第 {start + 1}–{min(start + size, len(rows))} 条")
+    return rows[start:start + size]
