@@ -17,6 +17,12 @@ from .schemas import Transcript, import_text
 
 
 def submit(settings: Settings, store: Store, upload: BinaryIO, filename: str, title: str, metadata: dict, allow_duplicate: bool = False, stereo_mode: str = "mix") -> tuple[str, str]:
+    from .server_ui import write_guard
+    with write_guard(store, upload, queue=True):
+        return _submit(settings, store, upload, filename, title, metadata, allow_duplicate, stereo_mode)
+
+
+def _submit(settings: Settings, store: Store, upload: BinaryIO, filename: str, title: str, metadata: dict, allow_duplicate: bool = False, stereo_mode: str = "mix") -> tuple[str, str]:
     title = title.strip()[:200] or Path(filename).stem[:200] or "未命名面试"
     suffix = Path(filename).suffix.lower()
     if suffix not in (".mp3", ".m4a", ".wav", ".txt", ".json", ".docx", ".md"):

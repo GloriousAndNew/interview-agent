@@ -1,0 +1,12 @@
+*
+!requirements.lock.txt
+!requirements-server.lock.txt
+!pyproject.toml
+!app.py
+!worker.py
+!interview_agent/
+!interview_agent/**
+!deploy/
+!deploy/Dockerfile
+**/__pycache__
+**/*.pyc

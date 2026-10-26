@@ -1,0 +1,121 @@
+name: interview-agent
+
+x-app: &app
+  image: interview-agent:${APP_VERSION:-0.2.0}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    args:
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+  restart: unless-stopped
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  volumes:
+    - app_data:/data
+  environment: &environment
+    SERVER_MODE: "1"
+    SERVER_DATA_DIR: /data
+    PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:18501}
+    SERVER_ALLOW_HTTP: ${SERVER_ALLOW_HTTP:-1}
+    GATEWAY_SECRET: ${GATEWAY_SECRET:?Set a random secret of at least 48 characters}
+    SERVER_JOB_CONCURRENCY: ${SERVER_JOB_CONCURRENCY:-2}
+    SERVER_ANSWER_CONCURRENCY: ${SERVER_ANSWER_CONCURRENCY:-2}
+    SERVER_UPLOAD_MB: ${SERVER_UPLOAD_MB:-100}
+    AliApiKey: ${AliApiKey:-}
+    deepseek: ${deepseek:-}
+    OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+    OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+    OSS_SESSION_TOKEN: ${OSS_SESSION_TOKEN:-}
+    ASR_STORAGE_BUCKET: ${ASR_STORAGE_BUCKET:-}
+    OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  auth:
+    <<: *app
+    command: ["python", "-m", "interview_agent.server_api"]
+    environment:
+      <<: *environment
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Set an initial administrator password}
+    mem_limit: 768m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+
+  web:
+    <<: *app
+    command: ["python", "-m", "streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--server.fileWatcherType=none", "--server.enableStaticServing=false", "--server.maxUploadSize=100", "--browser.gatherUsageStats=false"]
+    environment:
+      <<: *environment
+      STREAMLIT_SERVER_COOKIE_SECRET: ${GATEWAY_SECRET}
+      STREAMLIT_SERVER_TRUSTED_USER_HEADERS: '{"X-IA-User":"id","X-IA-Session":"auth_session"}'
+    mem_limit: 4g
+    cpus: 2
+    depends_on:
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health',timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "interview_agent.server_worker"]
+    mem_limit: 8g
+    cpus: 4
+    stop_grace_period: 90s
+    depends_on:
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,time; assert time.time()-json.load(open('/data/server-worker-status.json'))['updated']<60"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 30s
+
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-8443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ${CADDYFILE:-./Caddyfile.loopback}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 256m
+    cpus: 0.5
+    depends_on:
+      web:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:

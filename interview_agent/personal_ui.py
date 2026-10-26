@@ -3,6 +3,7 @@ import streamlit as st
 
 from . import personal
 from .progress import local_time
+from .server_ui import download_button
 from .ui import page_heading, empty_state
 
 
@@ -63,7 +64,8 @@ def personal_page(settings, store):
                     if document:
                         st.text_area("提取正文", document["text"], height=230, disabled=True, key="personal-preview-" + selected)
                         a, b = st.columns(2)
-                        a.download_button("下载原文件", bytes(document["original"]), file_name=row["filename"], key="personal-download-" + selected, width="stretch")
+                        with a:
+                            download_button("下载原文件", bytes(document["original"]), file_name=row["filename"], key="personal-download-" + selected, width="stretch")
                         if b.button("停用此版本" if row["active"] else "启用此版本", key="personal-active-" + selected, width="stretch"):
                             personal.set_active(store, selected, not row["active"])
                             st.rerun()

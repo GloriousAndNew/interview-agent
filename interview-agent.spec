@@ -20,7 +20,7 @@ version_info = VSVersionInfo(
 ff_data, ff_binary, ff_imports = collect_all("imageio_ffmpeg")
 datas = collect_data_files("streamlit") + copy_metadata("streamlit", recursive=True) + ff_data
 datas += [(str(root / "app.py"), "."), (str(root / "interview_agent/ui.css"), "interview_agent")]
-hidden = collect_submodules("interview_agent")
+hidden = collect_submodules("interview_agent", filter=lambda name: not name.endswith((".server_api", ".server_worker")))
 hidden += collect_submodules("streamlit", filter=lambda name: not name.startswith(("streamlit.testing", "streamlit.hello")))
 hidden += collect_submodules("aliyunsdkcore") + collect_submodules("aliyunsdkkms")
 hidden += ff_imports + ["worker", "tkinter", "tkinter.messagebox"]

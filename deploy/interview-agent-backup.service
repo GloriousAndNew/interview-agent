@@ -1,0 +1,10 @@
+[Unit]
+Description=Interview Agent consistent backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/interview-agent
+ExecStart=/bin/bash /opt/interview-agent/deploy/backup.sh
+UMask=0077

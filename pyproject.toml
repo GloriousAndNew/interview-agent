@@ -11,6 +11,7 @@ dependencies = ["streamlit>=1.66,<2", "pydantic>=2.10,<3", "httpx>=0.28,<1", "im
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+server = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "python-multipart>=0.0.20,<1"]
 
 [tool.setuptools.packages.find]
 include = ["interview_agent*"]

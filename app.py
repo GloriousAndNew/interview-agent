@@ -23,12 +23,17 @@ from interview_agent.ui import apply_style, navigate, page_heading, tags, task_h
 from interview_agent.reference_answers import answer_state, generate as generate_reference, markdown as reference_markdown
 from interview_agent.uploads import upload_summary
 from interview_agent.upload_test import test_upload
+from interview_agent.server_auth import enabled as server_enabled
+from interview_agent.server_ui import download_button, audio
 
 
 st.set_page_config(page_title="面试录音整理助手", page_icon="🎙️", layout="wide")
 
 
 def context():
+    if server_enabled():
+        from interview_agent.server_ui import context as server_context
+        return server_context()
     settings = Settings.load()
     return settings, Store(settings.data_dir)
 
@@ -94,6 +99,9 @@ STAGE = {"PREPROCESSING": "音频预处理", "ASR_UPLOADING": "上传录音", "A
 
 @st.fragment(run_every="3s")
 def tasks(store):
+    if server_enabled():
+        from interview_agent.server_ui import require_user
+        require_user()
     page_heading("处理任务", "跟踪每一次整理，及时查看进度与需要处理的问题。", "任务中心")
     counts = {r["status"]: r["n"] for r in store.rows("SELECT j.status,COUNT(*) n FROM jobs j JOIN interviews i ON i.id=j.interview_id WHERE i.deleted=0 GROUP BY j.status")}
     summary = st.columns(3)
@@ -193,7 +201,7 @@ def tasks(store):
                     st.caption("此历史任务未记录字段级诊断；新处理或重试后会记录具体阶段、批次和规则。")
                 if recent:
                     st.json(recent)
-                st.download_button("下载诊断报告（不含录音正文和密钥）", json.dumps(diagnostic, ensure_ascii=False, indent=2), file_name=f"diagnostic-{row['id'][:8]}.json", mime="application/json", key="diagnostic-" + row["id"])
+                download_button("下载诊断报告（不含录音正文和密钥）", json.dumps(diagnostic, ensure_ascii=False, indent=2), file_name=f"diagnostic-{row['id'][:8]}.json", mime="application/json", key="diagnostic-" + row["id"])
             if row["status"] in ("FAILED", "CANCELLED"):
                 if st.button("从检查点重试", key="retry-" + row["id"]):
                     try:
@@ -241,7 +249,7 @@ def high_score_panel(settings, store, revision_id, qa_id, question, original, lo
                         st.text(f"{'模型引用' if evidence_id in cited else '检索候选'} · 版本 {item['document_id'][:8]}")
                         st.text(item["text"])
             st.caption(f"生成于 {local_time(saved['created'])} · {saved['model']}")
-            st.download_button("下载高分答案 Markdown", reference_markdown(question, original, content), file_name=f"high-score-{qa_id[:12]}.md", mime="text/markdown", key="reference-download-" + key)
+            download_button("下载高分答案 Markdown", reference_markdown(question, original, content), file_name=f"high-score-{qa_id[:12]}.md", mime="text/markdown", key="reference-download-" + key)
         else:
             st.info("结合当前问题、岗位、原始回答和相关原文生成参考答案。")
         if latest and latest["status"] == "FAILED":
@@ -315,12 +323,12 @@ def details(settings, store):
     if document:
         original = inside(settings.data_dir, document["path"])
         if original.exists():
-            st.download_button("下载原始问答文档", original.read_bytes(), file_name=document["filename"], mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document" if original.suffix == ".docx" else "text/markdown")
+            download_button("下载原始问答文档", original.read_bytes(), file_name=document["filename"], mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document" if original.suffix == ".docx" else "text/markdown")
     media = store.one("SELECT * FROM media WHERE id=?", (interview["media_id"],))
     if media:
         source = inside(settings.data_dir, media["path"])
         if source.exists():
-            st.audio(str(source), start_time=st.session_state.get("audio_start_" + interview_id, 0))
+            audio(str(source), start_time=st.session_state.get("audio_start_" + interview_id, 0))
     if not revision:
         st.info("还没有整理结果，请查看处理任务。")
         if cp.get("transcript"):
@@ -375,7 +383,7 @@ def details(settings, store):
                             except ValueError as exc:
                                 st.error(str(exc))
     with transcript_tab:
-        st.download_button("下载标准转写 JSON", json.dumps(transcript.model_dump(), ensure_ascii=False, indent=2), file_name="transcript.json", mime="application/json")
+        download_button("下载标准转写 JSON", json.dumps(transcript.model_dump(), ensure_ascii=False, indent=2), file_name="transcript.json", mime="application/json")
         pending = {d["segment_id"] for d in content.get("dispositions", []) if d["category"] == "needs_review"}
         if pending:
             with st.expander(f"待核对的未归类片段（{len(pending)} 个）", expanded=True):
@@ -431,7 +439,7 @@ def details(settings, store):
             export_revision(store, selected)
             st.rerun()
         path = export_revision(store, selected)
-        st.download_button("下载所选版本 Markdown", path.read_text(encoding="utf-8"), file_name=f"interview-{selected[:8]}.md", mime="text/markdown")
+        download_button("下载所选版本 Markdown", path.read_text(encoding="utf-8"), file_name=f"interview-{selected[:8]}.md", mime="text/markdown")
         st.caption("本地笔记：" + str(path.parent))
         st.caption("外部修改 Markdown 不会自动写回数据库。媒体链接指向本机原录音。")
         if st.checkbox("确认删除本场面试及本地结果，备份单独保留", key="delete-confirm-" + interview_id):
@@ -441,6 +449,9 @@ def details(settings, store):
 
 
 def settings_page(settings, store):
+    if server_enabled():
+        from interview_agent.server_ui import account_page
+        return account_page(settings, store)
     page_heading("设置与数据", "管理模型连接、调用预算与本地数据。", "应用设置")
     connection_tab, update_tab, data_tab = st.tabs(["模型与存储", "程序更新", "调用与备份"])
     with connection_tab:
@@ -544,7 +555,12 @@ def main():
         st.markdown('<div class="sidebar-brand"><span class="brand-icon">面</span><div><strong>面试知识库</strong><small>记录 · 整理 · 复盘</small></div></div>', unsafe_allow_html=True)
         navigation = st.radio("导航", ["导入面试", "处理任务", "问答知识库", "个人信息", "面试详情", "设置与数据"], key="navigation", label_visibility="collapsed")
         st.divider()
-        st.caption(f"v{__version__} · 本地应用 · 云端模型")
+        st.caption(f"v{__version__} · {'多人服务器' if server_enabled() else '本地应用'} · 云端模型")
+        if server_enabled():
+            from interview_agent.server_ui import require_user
+            user = require_user()
+            st.caption("当前账号：" + user['username'])
+            st.link_button("账号与退出", "/auth/account")
         st.markdown('<div class="sidebar-note">把每一次面试，变成下一次的准备。</div>', unsafe_allow_html=True)
         status_file = settings.data_dir / "worker-status.json"
         alive = False
@@ -555,7 +571,7 @@ def main():
                 pass
         st.markdown(f'<div class="worker-status"><span class="status-dot {"online" if alive else ""}"></span>{"后台已连接" if alive else "后台未连接"}</div>', unsafe_allow_html=True)
         if not alive:
-            st.caption("请使用 start.ps1 启动后台")
+            st.caption("后台等待调度" if server_enabled() else "请使用 start.ps1 启动后台")
     from interview_agent.personal_ui import personal_page
     {"导入面试": lambda: home(settings, store), "处理任务": lambda: tasks(store), "问答知识库": lambda: library(settings, store), "个人信息": lambda: personal_page(settings, store), "面试详情": lambda: details(settings, store), "设置与数据": lambda: settings_page(settings, store)}[navigation]()
 

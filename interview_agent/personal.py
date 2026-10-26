@@ -82,6 +82,12 @@ def extract(data: bytes, suffix: str) -> str:
 
 
 def add_document(store, stream, filename: str, kind: str) -> str:
+    from .server_ui import write_guard
+    with write_guard(store, stream):
+        return _add_document(store, stream, filename, kind)
+
+
+def _add_document(store, stream, filename: str, kind: str) -> str:
     guard(store)
     filename = filename.replace("\\", "/").rsplit("/", 1)[-1][:200]
     suffix = Path(filename).suffix.lower()

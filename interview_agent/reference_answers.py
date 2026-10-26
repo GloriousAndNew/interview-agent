@@ -77,6 +77,12 @@ def context(store, revision_id: str, qa_id: str) -> dict:
 
 
 def generate(settings, store, revision_id: str, qa_id: str, *, provider_factory=DeepSeek) -> dict:
+    from .server_ui import generation_guard
+    with generation_guard(store):
+        return _generate(settings, store, revision_id, qa_id, provider_factory=provider_factory)
+
+
+def _generate(settings, store, revision_id: str, qa_id: str, *, provider_factory=DeepSeek) -> dict:
     source = context(store, revision_id, qa_id)
     from .personal import answer_context
     personal_context = answer_context(store, source['question'], source.get('original_answer'), source['position'])

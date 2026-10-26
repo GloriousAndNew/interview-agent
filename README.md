@@ -1,10 +1,12 @@
 # 面试录音整理助手
 
-Windows 本地应用，使用阿里云 ASR 转写录音、DeepSeek Flash 整理问答，SQLite 和 Markdown 保存到本机。
+支持 Windows 本地使用与 Linux 小团队部署，使用阿里云 ASR 转写录音、DeepSeek Flash 整理问答，SQLite 和 Markdown 保存到本机。
 
 ## Windows 程序包下载
 
 [下载最新 Windows x64 程序包](https://github.com/GloriousAndNew/interview-agent/releases/latest)。解压完整目录后双击 `interview-agent.exe`，无需安装 Python。请保留 `_internal` 文件夹，并配置云端模型环境变量。
+
+v0.2.0 新增 Linux 多人部署、登录和账号管理、用户数据隔离、任务并发控制、配额及备份。部署方法见 [Linux 多人部署说明](docs/server-deployment.md)。Windows 继续使用本地模式。
 
 v0.1.6 精简页面布局：个人资料单份预览，问答和任务分页，建议与来源按需展开。支持上传简历与面试讲稿，配置目标岗位，通过本地检索生成有资料依据的高分答案。详见 [个人信息使用说明](docs/personal-information.md)。
 

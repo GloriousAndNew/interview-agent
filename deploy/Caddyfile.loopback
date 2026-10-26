@@ -1,0 +1,23 @@
+:80 {
+    request_body {
+        max_size 110MB
+    }
+    route {
+        request_header -X-IA-User
+        request_header -X-IA-Session
+        request_header -X-IA-Proof
+        @identity path /auth/* /files/* /healthz
+        handle @identity {
+            reverse_proxy auth:8000
+        }
+        handle {
+            forward_auth auth:8000 {
+                uri /auth/verify
+                copy_headers X-IA-User X-IA-Session X-IA-Proof
+            }
+            @unsafe_media path /media/* /_stcore/media/* /app/static/*
+            respond @unsafe_media 404
+            reverse_proxy web:8501
+        }
+    }
+}
